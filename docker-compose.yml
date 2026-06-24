@@ -1,0 +1,117 @@
+# Local development stack for the CDC platform.
+#
+# Brings up Kafka (KRaft, no ZooKeeper), Postgres configured for logical
+# replication, and MinIO (S3-compatible) with a snapshot bucket auto-created.
+#
+# Host connection details (see README "Local stack"):
+#   Kafka     localhost:29092          (PLAINTEXT_HOST listener)
+#   Postgres  localhost:5432           user/pass/db = cdc / cdc / cdc
+#   MinIO API localhost:9000           access/secret = minioadmin / minioadmin
+#   MinIO UI  http://localhost:9001
+#
+# All credentials here are local-only dev defaults. Do not reuse them anywhere.
+
+name: cdc-local
+
+services:
+  kafka:
+    image: apache/kafka:3.9.1
+    container_name: cdc-kafka
+    ports:
+      - "29092:29092" # host access
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Internal (PLAINTEXT) for in-network clients, PLAINTEXT_HOST for the host.
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  postgres:
+    image: postgres:17
+    container_name: cdc-postgres
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "wal_sender_timeout=60s"
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: cdc
+      POSTGRES_PASSWORD: cdc
+      POSTGRES_DB: cdc
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cdc -d cdc"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+
+  minio:
+    image: minio/minio:latest
+    container_name: cdc-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # web console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local 2>/dev/null || curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - minio-data:/data
+
+  # One-shot init: waits for MinIO, then creates the snapshot bucket.
+  minio-setup:
+    image: minio/mc:latest
+    container_name: cdc-minio-setup
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        until mc alias set local http://minio:9000 minioadmin minioadmin; do
+          echo "waiting for minio..."; sleep 2;
+        done
+        mc mb --ignore-existing local/cdc-snapshots
+        mc ls local
+        echo "minio snapshot bucket ready"
+    restart: "no"
+
+volumes:
+  kafka-data:
+  postgres-data:
+  minio-data:
