@@ -24,8 +24,10 @@ lint:
 	$(GO) vet ./...
 	golangci-lint run
 
-## generate: regenerate protobuf Go bindings from proto/
+## generate: regenerate protobuf Go bindings from proto/ using pinned plugins
 generate:
+	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go
+	$(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc
 	$(BUF) generate
 
 ## tidy: tidy and verify the module graph

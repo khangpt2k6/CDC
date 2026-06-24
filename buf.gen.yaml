@@ -1,0 +1,11 @@
+version: v2
+plugins:
+  # protoc-gen-go and protoc-gen-go-grpc are local plugins; their versions are
+  # pinned as tool dependencies in go.mod (see `make generate`) so codegen is
+  # reproducible across machines and CI.
+  - local: protoc-gen-go
+    out: internal/gen
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: internal/gen
+    opt: paths=source_relative
