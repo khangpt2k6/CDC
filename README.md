@@ -76,3 +76,16 @@ docker compose up -d       # start
 docker compose ps          # check health
 docker compose down -v     # stop and remove volumes
 ```
+
+## Continuous integration
+
+Every pull request and every push to `main` runs the GitHub Actions pipeline
+([.github/workflows/ci.yml](.github/workflows/ci.yml)):
+
+- `go build ./...`, `go vet ./...`, `go test ./...`
+- `golangci-lint run`
+- `buf lint`, `buf breaking` (against `main`), and a proto codegen drift check
+  (`buf generate` must produce no diff)
+
+**CI must be green to merge.** Configure branch protection on `main` to require
+this workflow so regressions cannot land.
