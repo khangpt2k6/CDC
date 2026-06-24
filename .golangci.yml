@@ -1,0 +1,12 @@
+version: "2"
+
+# Aggregated lint config. Defaults already enable errcheck, govet, ineffassign,
+# staticcheck and unused; we add revive for style. Generated code (protobuf) is
+# excluded automatically by the default "generated: lax" exclusion.
+linters:
+  enable:
+    - revive
+  exclusions:
+    generated: lax
+    paths:
+      - internal/gen

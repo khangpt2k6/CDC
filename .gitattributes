@@ -1,0 +1,15 @@
+# Normalize line endings to LF in the repo so the Makefile and shell/YAML
+# tooling behave on the Linux CI runner regardless of the author's OS.
+* text=auto eol=lf
+
+*.go    text eol=lf
+go.mod  text eol=lf
+go.sum  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.proto text eol=lf
+*.sh    text eol=lf
+Makefile text eol=lf
+
+# Generated protobuf code - keep diffs collapsed in reviews.
+internal/gen/** linguist-generated=true

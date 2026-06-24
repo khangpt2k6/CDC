@@ -1,0 +1,24 @@
+# Build artifacts
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+coverage.txt
+coverage.html
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Claude / superpowers process docs (local working notes, never committed)
+docs/superpowers/
