@@ -109,6 +109,26 @@ bash deploy/verify-snapshot.sh --fresh     # cold start: docker compose down -v 
 `--fresh` drops all volumes for a true cold snapshot; omit it to verify an
 already-running stack.
 
+## Verify restart survival (ROADMAP Issue 2.2)
+
+`deploy/verify-restart.sh` proves the worker resumes cleanly after a crash under
+load, with no loss and no surviving duplicates. It brings up the stack, registers
+the connector, builds the worker, then runs a background load generator while it
+repeatedly `kill -9`s and restarts the worker. After draining it asserts:
+
+- the worker resumes from the committed Kafka offset after each restart (read
+  directly from the consumer group) and consumer lag returns to zero;
+- the ClickHouse `FINAL` view matches Postgres exactly — equal row counts **and**
+  an all-column content checksum per table.
+
+```sh
+bash deploy/verify-restart.sh             # verify against the current stack
+bash deploy/verify-restart.sh --fresh     # cold start: docker compose down -v first
+CYCLES=5 bash deploy/verify-restart.sh    # more kill/restart cycles
+```
+
+It stops the worker and generator on exit and exits non-zero on any failure.
+
 ## Local stack
 
 `docker compose up -d` brings up the pipeline locally. All credentials are

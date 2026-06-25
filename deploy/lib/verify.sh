@@ -100,3 +100,112 @@ wait_for_ch_count() {
   echo "${got:-0}"
   return 1
 }
+
+# ------------------------------------------------------------------------------
+# Content parity (ROADMAP Issue 2.2: "final view matches source")
+# ------------------------------------------------------------------------------
+#
+# A row count alone is too weak to prove parity: a dropped UPDATE leaves the same
+# number of rows, just with stale values. So we fingerprint the *content* of the
+# current state on each side and compare.
+#
+# The fingerprint is md5(concat of every row's columns, ordered by id). For the
+# two hashes to match, both engines must render each value to a byte-identical
+# string, so every column is normalized to a canonical text form:
+#   - timestamps -> 'YYYY-MM-DD HH24:MI:SS.US' in UTC, no timezone suffix, fixed
+#     6-digit microseconds. Postgres timestamptz prints '+00' and ClickHouse
+#     DateTime64 does not, so both are reformatted rather than cast.
+#   - decimals/ints/text -> cast to text (identical across engines at this scale).
+# Columns mirror clickhouse.Specs (internal/sink/clickhouse/map.go) per table.
+
+# pg_checksum <table> fingerprints the current Postgres state for a tracked table.
+pg_checksum() {
+  local expr
+  case "$1" in
+    customers)
+      expr="id::text, email, full_name, country,
+            to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US'),
+            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')" ;;
+    orders)
+      expr="id::text, customer_id::text, status, total_amount::text, currency,
+            to_char(placed_at  AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US'),
+            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')" ;;
+    *) echo "pg_checksum: unknown table '$1'" >&2; return 2 ;;
+  esac
+  # concat_ws with a separator the data can't contain (chr(31), the unit
+  # separator; matches char(31) on the ClickHouse side), aggregated in id order,
+  # then hashed. coalesce('') keeps a NULL from collapsing the whole row string.
+  pg_query "SELECT md5(coalesce(string_agg(r, '|' ORDER BY id), ''))
+            FROM (SELECT id, concat_ws(chr(31), $expr) AS r FROM public.$1) s"
+}
+
+# ch_checksum <table> fingerprints the current ClickHouse state (FINAL, live rows
+# only) with the SAME normalization, so it compares equal to pg_checksum.
+ch_checksum() {
+  local expr
+  # toString on a DateTime64(6) yields 'YYYY-MM-DD HH:MM:SS.ffffff' (6-digit,
+  # UTC, no offset) -- byte-identical to Postgres to_char(... 'US'); verified
+  # against both engines incl. whole-second and trailing-zero cases.
+  case "$1" in
+    customers)
+      expr="toString(id), email, full_name, country,
+            toString(created_at), toString(updated_at)" ;;
+    orders)
+      # toDecimalString(..., 2) pins the scale so 42.50 doesn't render as 42.5;
+      # Postgres numeric(12,2)::text already keeps both decimals.
+      expr="toString(id), toString(customer_id), status, toDecimalString(total_amount, 2), currency,
+            toString(placed_at), toString(updated_at)" ;;
+    *) echo "ch_checksum: unknown table '$1'" >&2; return 2 ;;
+  esac
+  # Reproduce Postgres's string_agg(... ORDER BY id): collect (id, row_text)
+  # tuples, sort NUMERICALLY by id (arraySort's default lexical order would put
+  # '10' before '2'), then concat the row_text parts. char(31) matches concat_ws
+  # on the Postgres side; '|' is the inter-row separator.
+  ch_query "SELECT lower(hex(MD5(arrayStringConcat(
+              arrayMap(t -> t.2,
+                arraySort(t -> t.1,
+                  groupArray((id, arrayStringConcat([$expr], char(31)))))),
+              '|'))))
+            FROM cdc.$1 FINAL WHERE _is_deleted = 0"
+}
+
+# wait_for_parity <table> [timeout_s] waits until the ClickHouse live count equals
+# the Postgres count (pipeline drained), then returns. It does NOT compare
+# checksums itself — the caller does that once counts agree, so a count mismatch
+# and a content mismatch produce distinct, readable failures. Returns 0 once
+# counts converge, 1 on timeout. Echoes the final ClickHouse count.
+wait_for_parity() {
+  local table=$1 timeout=${2:-60}
+  wait_for_ch_count "$table" "$(pg_count "$table")" "$timeout"
+}
+
+# ------------------------------------------------------------------------------
+# Kafka consumer-group offsets (ROADMAP Issue 2.2: "resume from committed offset")
+# ------------------------------------------------------------------------------
+
+# kafka_group_offsets <group> prints "<topic> <partition> <current-offset> <lag>"
+# for every partition the group has committed, by describing it through the Kafka
+# CLI inside the broker container. Used to prove the worker resumes at (>=) the
+# offset it had committed before a crash, and that lag drains to 0 afterward.
+#
+# kafka-consumer-groups.sh --describe columns are:
+#   GROUP TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG CONSUMER-ID HOST CLIENT-ID
+# so $2=topic, $3=partition, $4=current-offset, $6=lag. We require a numeric
+# current-offset to skip the header and any blank/owner-only lines.
+#
+# The command runs through `sh -c '...'` inside the container so the absolute
+# /opt/kafka/... path is NOT mangled by MSYS/Git-Bash path conversion on Windows
+# (which would rewrite it to C:/Program Files/Git/opt/kafka and fail). This form
+# is portable across Windows Git Bash, Linux, and macOS.
+kafka_group_offsets() {
+  $COMPOSE exec -T kafka sh -c \
+    "/opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:9092 --describe --group '$1'" \
+    2>/dev/null \
+    | awk '$4 ~ /^[0-9]+$/ { print $2, $3, $4, $6 }'
+}
+
+# kafka_total_lag <group> sums LAG across all partitions (0 means fully caught
+# up). Echoes the total; non-numeric/absent lag rows count as 0.
+kafka_total_lag() {
+  kafka_group_offsets "$1" | awk '{ s += ($4 ~ /^[0-9]+$/ ? $4 : 0) } END { print s+0 }'
+}
