@@ -1,12 +1,9 @@
-# CDC platform task runner.
-#
-# Common targets used locally and in CI. `generate` wraps buf codegen (Issue 0.2).
+# CDC pipeline task runner.
 
 GO       ?= go
-BUF      ?= buf
 BIN_DIR  ?= bin
 
-.PHONY: all build test lint generate tidy clean
+.PHONY: all build test lint run tidy clean
 
 all: build test lint
 
@@ -24,11 +21,9 @@ lint:
 	$(GO) vet ./...
 	golangci-lint run
 
-## generate: regenerate protobuf Go bindings from proto/ using pinned plugins
-generate:
-	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go
-	$(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc
-	$(BUF) generate
+## run: run the worker against the local stack
+run:
+	$(GO) run ./cmd/worker
 
 ## tidy: tidy and verify the module graph
 tidy:
