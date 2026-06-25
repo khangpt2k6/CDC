@@ -32,7 +32,7 @@ func Load(getenv func(string) string) (Config, error) {
 		KafkaBrokers:  splitList(get(getenv, "CDC_KAFKA_BROKERS", "localhost:29092")),
 		KafkaGroup:    get(getenv, "CDC_KAFKA_GROUP", "cdc-clickhouse-sink"),
 		KafkaTopics:   splitList(get(getenv, "CDC_KAFKA_TOPICS", "cdc.public.customers,cdc.public.orders")),
-		ClickHouseDSN: get(getenv, "CDC_CLICKHOUSE_DSN", "clickhouse://cdc:cdc@localhost:9000/cdc"),
+		ClickHouseDSN: get(getenv, "CDC_CLICKHOUSE_DSN", "clickhouse://default:@localhost:9000/cdc"),
 		MetricsAddr:   get(getenv, "CDC_METRICS_ADDR", ":9100"),
 		LogLevel:      get(getenv, "CDC_LOG_LEVEL", "info"),
 	}

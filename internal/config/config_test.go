@@ -21,7 +21,7 @@ func TestLoadDefaults(t *testing.T) {
 		KafkaBrokers:  []string{"localhost:29092"},
 		KafkaGroup:    "cdc-clickhouse-sink",
 		KafkaTopics:   []string{"cdc.public.customers", "cdc.public.orders"},
-		ClickHouseDSN: "clickhouse://cdc:cdc@localhost:9000/cdc",
+		ClickHouseDSN: "clickhouse://default:@localhost:9000/cdc",
 		BatchSize:     1000,
 		FlushInterval: time.Second,
 		MetricsAddr:   ":9100",
