@@ -5,6 +5,7 @@ package model
 // Op is the kind of change a ChangeEvent carries.
 type Op string
 
+// The change operations a ChangeEvent can carry.
 const (
 	OpCreate   Op = "c" // insert
 	OpUpdate   Op = "u" // update
