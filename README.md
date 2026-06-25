@@ -93,6 +93,22 @@ make run                                    # start the Go consumer
 # open Grafana, watch the analytics dashboard update as Postgres changes
 ```
 
+## Verify the snapshot lands (ROADMAP Issue 2.1)
+
+`deploy/verify-snapshot.sh` drives the full stack end-to-end and asserts that
+Debezium's initial snapshot landed in ClickHouse and that subsequent streaming
+changes arrive with no loss or duplicates. It brings up the stack, registers the
+connector, runs the worker in the background, checks both acceptance criteria,
+then stops the worker — exiting non-zero on any failure.
+
+```sh
+bash deploy/verify-snapshot.sh             # verify against the current stack
+bash deploy/verify-snapshot.sh --fresh     # cold start: docker compose down -v first
+```
+
+`--fresh` drops all volumes for a true cold snapshot; omit it to verify an
+already-running stack.
+
 ## Local stack
 
 `docker compose up -d` brings up the pipeline locally. All credentials are
