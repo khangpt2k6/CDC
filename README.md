@@ -93,7 +93,7 @@ make run                                    # start the Go consumer
 # open Grafana, watch the analytics dashboard update as Postgres changes
 ```
 
-## Verify the snapshot lands (ROADMAP Issue 2.1)
+## Verify the snapshot lands
 
 `deploy/verify-snapshot.sh` drives the full stack end-to-end and asserts that
 Debezium's initial snapshot landed in ClickHouse and that subsequent streaming
@@ -109,7 +109,7 @@ bash deploy/verify-snapshot.sh --fresh     # cold start: docker compose down -v 
 `--fresh` drops all volumes for a true cold snapshot; omit it to verify an
 already-running stack.
 
-## Verify restart survival (ROADMAP Issue 2.2)
+## Verify restart survival
 
 `deploy/verify-restart.sh` proves the worker resumes cleanly after a crash under
 load, with no loss and no surviving duplicates. It brings up the stack, registers
@@ -128,6 +128,27 @@ CYCLES=5 bash deploy/verify-restart.sh    # more kill/restart cycles
 ```
 
 It stops the worker and generator on exit and exits non-zero on any failure.
+
+## Verify source-to-sink parity
+
+`deploy/verify-parity.sh` proves the ClickHouse current-state view faithfully
+reflects Postgres after a **deterministic** mix of inserts, updates, and deletes
+— so correctness is provable, not assumed. It brings up the stack, registers the
+connector, builds and runs the worker, applies a fixed workload (10 sentinel
+customers + orders, updating some and deleting some), waits for consumer lag to
+drain to zero, settles merges with `OPTIMIZE TABLE … FINAL`, then asserts per
+table:
+
+- row counts match between Postgres and the ClickHouse `FINAL` view;
+- an all-column content checksum matches — catching dropped updates or deletes
+  that an equal row count would hide.
+
+```sh
+bash deploy/verify-parity.sh             # verify against the current stack
+bash deploy/verify-parity.sh --fresh     # cold start: docker compose down -v first
+```
+
+It stops the worker on exit and exits non-zero on any failure.
 
 ## Local stack
 

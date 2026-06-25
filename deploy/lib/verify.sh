@@ -209,3 +209,18 @@ kafka_group_offsets() {
 kafka_total_lag() {
   kafka_group_offsets "$1" | awk '{ s += ($4 ~ /^[0-9]+$/ ? $4 : 0) } END { print s+0 }'
 }
+
+# ------------------------------------------------------------------------------
+# Merge settling (ROADMAP Issue 2.3: settle before comparison)
+# ------------------------------------------------------------------------------
+
+# ch_optimize_final <table> forces ClickHouse to merge all ReplacingMergeTree
+# parts so the table is fully collapsed before a content comparison. A FINAL
+# query already collapses versions at read time, so this is not required for
+# correctness; it settles the on-disk state so the checksum is taken over merged
+# data, matching the "OPTIMIZE TABLE ... FINAL" step in Issue 2.3. Best-effort:
+# OPTIMIZE can be a no-op or briefly contend with a background merge, so failure
+# is swallowed (the FINAL-qualified checksum query is still authoritative).
+ch_optimize_final() {
+  ch_query "OPTIMIZE TABLE cdc.$1 FINAL" >/dev/null 2>&1
+}
