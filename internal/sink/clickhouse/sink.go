@@ -67,21 +67,22 @@ func (s *Sink) WriteBatch(ctx context.Context, table string, rows [][]any) error
 // Close closes the underlying connection.
 func (s *Sink) Close() error { return s.conn.Close() }
 
-// statements splits a multi-statement SQL string on ";" and strips full-line
-// comments, so each CREATE TABLE can be issued on its own (Exec runs one
-// statement at a time).
+// statements splits a multi-statement SQL string into individual statements.
+// Full-line comments are stripped FIRST so that a ";" appearing inside a
+// comment cannot split a statement; only then is the remainder split on ";".
 func statements(sql string) []string {
-	var out []string
-	for _, raw := range strings.Split(sql, ";") {
-		var b strings.Builder
-		for _, line := range strings.Split(raw, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "--") {
-				continue
-			}
-			b.WriteString(line)
-			b.WriteString("\n")
+	var clean strings.Builder
+	for _, line := range strings.Split(sql, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
 		}
-		if s := strings.TrimSpace(b.String()); s != "" {
+		clean.WriteString(line)
+		clean.WriteString("\n")
+	}
+
+	var out []string
+	for _, raw := range strings.Split(clean.String(), ";") {
+		if s := strings.TrimSpace(raw); s != "" {
 			out = append(out, s)
 		}
 	}
