@@ -1,47 +1,46 @@
-// Command worker is the entrypoint for a CDC pipeline worker.
+// Command worker runs the CDC sink: it consumes Debezium change events from
+// Kafka and lands them in ClickHouse.
 //
-// At this stage it is a buildable placeholder: it parses configuration from
-// flags and environment variables and logs startup. Capture, snapshot, and
-// sink logic are wired in by later phases.
+// At this stage it loads configuration and logs startup; the Kafka consumer
+// and ClickHouse sink are wired in by later issues.
 package main
 
 import (
-	"flag"
 	"log/slog"
 	"os"
+
+	"github.com/khangpt2k6/CDC/internal/config"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
 func main() {
-	var (
-		logLevel = flag.String("log-level", env("CDC_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
-		tenant   = flag.String("tenant", env("CDC_TENANT", ""), "tenant id this worker serves")
-	)
-	flag.Parse()
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		slog.Error("invalid configuration", "err", err)
+		os.Exit(1)
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: parseLevel(*logLevel),
+		Level: parseLevel(cfg.LogLevel),
 	}))
 	slog.SetDefault(logger)
 
+	// The ClickHouse DSN carries a password, so it is intentionally not logged.
 	slog.Info("cdc worker starting",
 		"version", version,
-		"tenant", *tenant,
-		"log_level", *logLevel,
+		"kafka_brokers", cfg.KafkaBrokers,
+		"kafka_group", cfg.KafkaGroup,
+		"kafka_topics", cfg.KafkaTopics,
+		"batch_size", cfg.BatchSize,
+		"flush_interval", cfg.FlushInterval.String(),
+		"metrics_addr", cfg.MetricsAddr,
+		"log_level", cfg.LogLevel,
 	)
 
-	// No pipeline yet - exit cleanly so the binary is runnable in CI.
-	slog.Info("cdc worker has no work configured yet; exiting")
-}
-
-// env returns the value of the environment variable key, or def when unset.
-func env(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return def
+	// Consumer and sink are wired in by later issues.
+	slog.Info("cdc worker has no pipeline wired yet; exiting")
 }
 
 // parseLevel maps a log level string to a slog.Level, defaulting to info.
