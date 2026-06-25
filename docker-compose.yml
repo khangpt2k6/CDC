@@ -1,13 +1,14 @@
-# Local development stack for the CDC platform.
+# Local development stack for the CDC pipeline.
 #
-# Brings up Kafka (KRaft, no ZooKeeper), Postgres configured for logical
-# replication, and MinIO (S3-compatible) with a snapshot bucket auto-created.
+# Postgres (logical replication) -> Debezium (Kafka Connect) -> Kafka
+#   -> Go consumer -> ClickHouse.
 #
 # Host connection details (see README "Local stack"):
-#   Kafka     localhost:29092          (PLAINTEXT_HOST listener)
-#   Postgres  localhost:5432           user/pass/db = cdc / cdc / cdc
-#   MinIO API localhost:9000           access/secret = minioadmin / minioadmin
-#   MinIO UI  http://localhost:9001
+#   Postgres       localhost:5432           user/pass/db = cdc / cdc / cdc
+#   Kafka          localhost:29092          PLAINTEXT_HOST listener
+#   Kafka Connect  http://localhost:8083    Debezium connector REST API
+#   ClickHouse     localhost:8123 (HTTP)    user/pass/db = cdc / cdc / cdc
+#                  localhost:9000 (native)
 #
 # All credentials here are local-only dev defaults. Do not reuse them anywhere.
 
@@ -33,7 +34,8 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # Debezium and the demo topics are created on demand by Connect.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
       interval: 10s
@@ -72,46 +74,63 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
 
-  minio:
-    image: minio/minio:latest
-    container_name: cdc-minio
-    command: server /data --console-address ":9001"
+  # Kafka Connect with the Debezium connectors bundled in. Captures Postgres
+  # changes via the pgoutput logical decoding plugin and writes them to Kafka.
+  connect:
+    image: quay.io/debezium/connect:3.0
+    container_name: cdc-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     ports:
-      - "9000:9000" # S3 API
-      - "9001:9001" # web console
+      - "8083:8083" # Connect REST API
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: cdc-connect
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
     healthcheck:
-      test: ["CMD-SHELL", "mc ready local 2>/dev/null || curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  # Columnar analytics store. The Go consumer batches change events into it.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: cdc-clickhouse
+    ports:
+      - "8123:8123" # HTTP
+      - "9000:9000" # native protocol
+    environment:
+      CLICKHOUSE_DB: cdc
+      CLICKHOUSE_USER: cdc
+      CLICKHOUSE_PASSWORD: cdc
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping >/dev/null 2>&1 || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 20
       start_period: 10s
     volumes:
-      - minio-data:/data
-
-  # One-shot init: waits for MinIO, then creates the snapshot bucket.
-  minio-setup:
-    image: minio/mc:latest
-    container_name: cdc-minio-setup
-    depends_on:
-      minio:
-        condition: service_started
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        until mc alias set local http://minio:9000 minioadmin minioadmin; do
-          echo "waiting for minio..."; sleep 2;
-        done
-        mc mb --ignore-existing local/cdc-snapshots
-        mc ls local
-        echo "minio snapshot bucket ready"
-    restart: "no"
+      - clickhouse-data:/var/lib/clickhouse
+      - ./deploy/clickhouse:/docker-entrypoint-initdb.d:ro
 
 volumes:
   kafka-data:
   postgres-data:
-  minio-data:
+  clickhouse-data:
