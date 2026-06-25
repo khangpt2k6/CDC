@@ -1,13 +1,14 @@
 # Local development stack for the CDC platform.
 #
 # Brings up Kafka (KRaft, no ZooKeeper), Postgres configured for logical
-# replication, and MinIO (S3-compatible) with a snapshot bucket auto-created.
+# replication, Kafka Connect (Debezium) for capture, and ClickHouse as the
+# analytics sink.
 #
 # Host connection details (see README "Local stack"):
-#   Kafka     localhost:29092          (PLAINTEXT_HOST listener)
-#   Postgres  localhost:5432           user/pass/db = cdc / cdc / cdc
-#   MinIO API localhost:9000           access/secret = minioadmin / minioadmin
-#   MinIO UI  http://localhost:9001
+#   Kafka          localhost:29092          (PLAINTEXT_HOST listener)
+#   Postgres       localhost:5432           user/pass/db = cdc / cdc / cdc
+#   Kafka Connect  http://localhost:8083    Debezium connector REST API
+#   ClickHouse     localhost:8123 / 9000    HTTP / native; user=default, no pass
 #
 # All credentials here are local-only dev defaults. Do not reuse them anywhere.
 
@@ -72,46 +73,66 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
 
-  minio:
-    image: minio/minio:latest
-    container_name: cdc-minio
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000" # S3 API
-      - "9001:9001" # web console
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    healthcheck:
-      test: ["CMD-SHELL", "mc ready local 2>/dev/null || curl -sf http://localhost:9000/minio/health/live || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
-    volumes:
-      - minio-data:/data
-
-  # One-shot init: waits for MinIO, then creates the snapshot bucket.
-  minio-setup:
-    image: minio/mc:latest
-    container_name: cdc-minio-setup
+  # Kafka Connect running the Debezium image (bundles the Postgres connector).
+  # Internal config/offset/status topics are created by Connect via AdminClient
+  # regardless of the broker's auto-create setting; replication factor must be 1
+  # on this single-broker stack.
+  connect:
+    image: debezium/connect:2.7.3.Final
+    container_name: cdc-connect
     depends_on:
-      minio:
-        condition: service_started
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        until mc alias set local http://minio:9000 minioadmin minioadmin; do
-          echo "waiting for minio..."; sleep 2;
-        done
-        mc mb --ignore-existing local/cdc-snapshots
-        mc ls local
-        echo "minio snapshot bucket ready"
-    restart: "no"
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8083:8083" # connector REST API
+    environment:
+      # Debezium's image uses bare names here, not the CONNECT_ prefix.
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: cdc-connect
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      # JSON converters with schemas off keep topic payloads compact for the
+      # Go sink (Phase 1); the connector config can still override per-stream.
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s # JVM boot + first-run internal topic creation is slow
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: cdc-clickhouse
+    ports:
+      - "8123:8123" # HTTP
+      - "9000:9000" # native
+    environment:
+      CLICKHOUSE_DB: cdc
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- 'http://localhost:8123/?query=SELECT%201' | grep -q 1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
 
 volumes:
   kafka-data:
   postgres-data:
-  minio-data:
+  clickhouse-data:
