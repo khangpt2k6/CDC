@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,6 +19,8 @@ import (
 	"github.com/khangpt2k6/CDC/internal/config"
 	"github.com/khangpt2k6/CDC/internal/consumer"
 	"github.com/khangpt2k6/CDC/internal/debezium"
+	"github.com/khangpt2k6/CDC/internal/dlq"
+	"github.com/khangpt2k6/CDC/internal/metrics"
 	"github.com/khangpt2k6/CDC/internal/sink/clickhouse"
 )
 
@@ -56,6 +59,17 @@ func main() {
 	}
 	defer cons.Close()
 
+	deadletter, err := dlq.New(cfg.KafkaBrokers, cfg.DLQTopicSuffix)
+	if err != nil {
+		slog.Error("connect DLQ producer", "err", err)
+		os.Exit(1)
+	}
+	defer deadletter.Close()
+
+	// Serve Prometheus metrics (currently just cdc_dlq_total) in the background.
+	// A bind failure is logged but non-fatal: it must not stop the data pipeline.
+	go serveMetrics(cfg.MetricsAddr)
+
 	slog.Info("cdc worker running",
 		"version", version,
 		"kafka_brokers", cfg.KafkaBrokers,
@@ -63,19 +77,42 @@ func main() {
 		"kafka_topics", cfg.KafkaTopics,
 		"batch_size", cfg.BatchSize,
 		"flush_interval", cfg.FlushInterval.String(),
+		"metrics_addr", cfg.MetricsAddr,
+		"dlq_topic_suffix", cfg.DLQTopicSuffix,
 	)
 
-	if err := run(ctx, cfg, cons, batch.New(sink, cfg.BatchSize)); err != nil && !errors.Is(err, context.Canceled) {
+	if err := run(ctx, cfg, cons, deadletter, batch.New(sink, cfg.BatchSize)); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("worker stopped with error", "err", err)
 		os.Exit(1)
 	}
 	slog.Info("cdc worker stopped cleanly")
 }
 
+// poller is the consume-side of Kafka the loop depends on: fetch records and
+// commit their offsets. *consumer.Consumer satisfies it; tests supply a fake.
+type poller interface {
+	Poll(context.Context) ([]*kgo.Record, error)
+	Commit(context.Context, []*kgo.Record) error
+}
+
+// deadLetterer routes a poison record aside. *dlq.Producer satisfies it.
+type deadLetterer interface {
+	Send(context.Context, *kgo.Record, error) error
+}
+
+// adder is the batching sink the loop drives. *batch.Batcher satisfies it.
+type adder interface {
+	Add(context.Context, batch.Item) (int64, bool, error)
+	Flush(context.Context) (int64, bool, error)
+	Len() int
+}
+
 // run is the consume loop. It polls with a deadline equal to the flush interval
 // (so an idle poll still flushes), maps each record, and commits Kafka offsets
-// only after the batcher has written the buffered rows to ClickHouse.
-func run(ctx context.Context, cfg config.Config, cons *consumer.Consumer, batcher *batch.Batcher) error {
+// only after the batcher has written the buffered rows to ClickHouse. Its
+// dependencies are interfaces so the loop can be driven by in-memory fakes in
+// tests; main wires the concrete consumer/dlq/batcher.
+func run(ctx context.Context, cfg config.Config, cons poller, deadletter deadLetterer, batcher adder) error {
 	var pending []*kgo.Record
 
 	commit := func(cctx context.Context) error {
@@ -112,9 +149,24 @@ func run(ctx context.Context, cfg config.Config, cons *consumer.Consumer, batche
 
 		for _, r := range recs {
 			pending = append(pending, r)
-			it, ok := mapRecord(r)
-			if !ok {
-				continue // tombstone / unsupported / unmappable; committed with the batch
+			it, err := mapRecord(r)
+			if errors.Is(err, errSkip) {
+				continue // tombstone / unsupported / untracked; committed with the batch
+			}
+			if err != nil {
+				// A poison message: route it aside and keep going. The DLQ send
+				// must succeed before this record's offset is allowed to advance,
+				// so a send failure is fatal to the iteration (no commit -> the
+				// record replays), exactly like a sink-write failure. This keeps
+				// the produce->write->commit ordering contract: nothing is
+				// dropped, and a malformed event never wedges the consumer.
+				if derr := deadletter.Send(ctx, r, err); derr != nil {
+					return derr
+				}
+				metrics.DLQTotal.Inc()
+				slog.Warn("routed bad event to DLQ",
+					"topic", r.Topic, "partition", r.Partition, "offset", r.Offset, "err", err)
+				continue
 			}
 			_, flushed, ferr := batcher.Add(ctx, it)
 			if ferr != nil {
@@ -140,35 +192,56 @@ func run(ctx context.Context, cfg config.Config, cons *consumer.Consumer, batche
 	}
 }
 
-// mapRecord parses and maps one Kafka record into a batch.Item. It returns
-// ok=false (logging the reason) for records that are intentionally skipped:
-// delete tombstones, unsupported ops, untracked tables, or unmappable rows.
-func mapRecord(r *kgo.Record) (batch.Item, bool) {
+// errSkip marks a record that is intentionally not written and is NOT an error:
+// a delete tombstone, an unsupported op, or a change for an untracked table.
+// Callers branch on it with errors.Is to distinguish a correct skip (advance the
+// offset, no DLQ) from a genuine poison message (route to the DLQ).
+var errSkip = errors.New("record intentionally skipped")
+
+// mapRecord parses and maps one Kafka record into a batch.Item. The returned
+// error means:
+//   - nil: the Item is valid and should be batched.
+//   - errSkip (via errors.Is): the record is correctly ignored (tombstone /
+//     unsupported op / untracked table); advance the offset, do not dead-letter.
+//   - any other error: the record is a poison message (unparseable or
+//     unmappable) and the caller routes it to the DLQ.
+func mapRecord(r *kgo.Record) (batch.Item, error) {
 	ev, err := debezium.Parse(r.Value)
 	if err != nil {
 		switch {
 		case errors.Is(err, debezium.ErrTombstone):
-			// expected after a delete; silently skip
+			return batch.Item{}, errSkip // expected after a delete
 		case errors.Is(err, debezium.ErrUnsupportedOp):
 			slog.Debug("skip unsupported op", "topic", r.Topic, "offset", r.Offset)
+			return batch.Item{}, errSkip
 		default:
-			slog.Warn("skip unparseable record", "topic", r.Topic, "offset", r.Offset, "err", err)
+			return batch.Item{}, err // malformed: dead-letter it
 		}
-		return batch.Item{}, false
 	}
 
 	spec, ok := clickhouse.Specs[ev.Table]
 	if !ok {
 		slog.Debug("skip record for untracked table", "table", ev.Table)
-		return batch.Item{}, false
+		return batch.Item{}, errSkip
 	}
 	row, err := clickhouse.MapRow(spec, ev)
 	if err != nil {
-		slog.Warn("skip unmappable record", "table", ev.Table, "offset", r.Offset, "err", err)
-		return batch.Item{}, false
+		return batch.Item{}, err // unmappable: dead-letter it
 	}
 
-	return batch.Item{Table: ev.Table, Row: row, Offset: r.Offset}, true
+	return batch.Item{Table: ev.Table, Row: row, Offset: r.Offset}, nil
+}
+
+// serveMetrics exposes Prometheus metrics on addr at /metrics. It blocks, so run
+// it in a goroutine. A serve error (e.g. the port is in use) is logged but not
+// fatal: metrics are observability, and losing them must not stop the pipeline.
+func serveMetrics(addr string) {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Warn("metrics server stopped", "addr", addr, "err", err)
+	}
 }
 
 // parseLevel maps a log level string to a slog.Level, defaulting to info.

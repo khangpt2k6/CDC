@@ -199,6 +199,12 @@ workflow so regressions cannot land.
   a batch means a crash replays events rather than dropping them; the
   `ReplacingMergeTree` version collapses the duplicate, so delivery is
   exactly-once in effect.
+- **Why a dead-letter topic for poison messages.** A single malformed or
+  unmappable event must not wedge the consumer. The worker republishes the raw
+  bytes (with the failure cause as Kafka headers) to a `<topic>.dlq` topic,
+  increments `cdc_dlq_total`, and keeps going. The DLQ send blocks before the
+  offset advances, so a poison message is quarantined-or-replayed, never silently
+  dropped.
 - **Why a Go consumer instead of the off-the-shelf ClickHouse sink connector.**
   A connector would remove the Go entirely. Writing the sink in Go is a
   deliberate choice for control over batching and mapping, and to own the CDC
