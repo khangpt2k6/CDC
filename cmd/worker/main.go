@@ -88,10 +88,31 @@ func main() {
 	slog.Info("cdc worker stopped cleanly")
 }
 
+// poller is the consume-side of Kafka the loop depends on: fetch records and
+// commit their offsets. *consumer.Consumer satisfies it; tests supply a fake.
+type poller interface {
+	Poll(context.Context) ([]*kgo.Record, error)
+	Commit(context.Context, []*kgo.Record) error
+}
+
+// deadLetterer routes a poison record aside. *dlq.Producer satisfies it.
+type deadLetterer interface {
+	Send(context.Context, *kgo.Record, error) error
+}
+
+// adder is the batching sink the loop drives. *batch.Batcher satisfies it.
+type adder interface {
+	Add(context.Context, batch.Item) (int64, bool, error)
+	Flush(context.Context) (int64, bool, error)
+	Len() int
+}
+
 // run is the consume loop. It polls with a deadline equal to the flush interval
 // (so an idle poll still flushes), maps each record, and commits Kafka offsets
-// only after the batcher has written the buffered rows to ClickHouse.
-func run(ctx context.Context, cfg config.Config, cons *consumer.Consumer, deadletter *dlq.Producer, batcher *batch.Batcher) error {
+// only after the batcher has written the buffered rows to ClickHouse. Its
+// dependencies are interfaces so the loop can be driven by in-memory fakes in
+// tests; main wires the concrete consumer/dlq/batcher.
+func run(ctx context.Context, cfg config.Config, cons poller, deadletter deadLetterer, batcher adder) error {
 	var pending []*kgo.Record
 
 	commit := func(cctx context.Context) error {
