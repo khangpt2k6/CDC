@@ -1,70 +1,97 @@
-# CDC Pipeline
+<div align="center">
 
-Real-time Change Data Capture: streams row changes from PostgreSQL into
-ClickHouse for analytics. Debezium captures the changes, Kafka carries them, and
-a Go worker lands them in ClickHouse. Grafana on ClickHouse is the dashboard.
+# ⚡ CDC Pipeline
 
+**Real time Change Data Capture from PostgreSQL to ClickHouse, with a live Grafana dashboard.**
+
+Row changes flow out of the operational database and into a fast columnar store
+in seconds. The primary is never touched by a query.
+
+[![CI](https://github.com/khangpt2k6/CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/khangpt2k6/CDC/actions/workflows/ci.yml)
+![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)
+![Kafka](https://img.shields.io/badge/Apache_Kafka-KRaft-231F20?logo=apachekafka&logoColor=white)
+![ClickHouse](https://img.shields.io/badge/ClickHouse-analytics-FFCC01?logo=clickhouse&logoColor=black)
+![Docker](https://img.shields.io/badge/Docker_Compose-one_command-2496ED?logo=docker&logoColor=white)
+
+<br/>
+
+![CDC pipeline in motion](docs/Visualize.gif)
+
+</div>
+
+---
+
+## 🔁 The flow
+
+```mermaid
+flowchart LR
+    PG[(PostgreSQL<br/>OLTP)]
+    DBZ[Debezium<br/>capture]
+    K[Kafka<br/>transport]
+    GO[Go worker<br/>this repo]
+    CH[(ClickHouse<br/>analytics)]
+    GF[Grafana<br/>dashboard]
+
+    PG -->|logical replication| DBZ
+    DBZ -->|change events| K
+    K -->|consume| GO
+    GO -->|batch insert| CH
+    CH -->|query| GF
 ```
-Postgres ──▶ Debezium ──▶ Kafka ──▶ Go consumer ──▶ ClickHouse ──▶ Grafana
- (OLTP)      (capture)   (transport)  (this repo)    (analytics)   (dashboard)
-```
 
-> **Status:** early. See [ROADMAP.md](ROADMAP.md) for the phase-by-phase build.
+> [!NOTE]
+> Debezium reads the Postgres write ahead log and Kafka carries the events. The
+> Go worker in this repo lands them in ClickHouse correctly, then Grafana shows
+> the result within seconds.
 
-**Stack:** PostgreSQL, Debezium on Kafka Connect, Apache Kafka (KRaft), Go,
-ClickHouse, Docker Compose, Prometheus + Grafana, GitHub Actions CI.
+---
 
-## Quickstart
+## 🚀 Quickstart
 
 ```sh
-docker compose up -d                       # Postgres, Kafka, Debezium, ClickHouse, Grafana
-./deploy/debezium/register-connector.sh    # register the Postgres source connector
-make run                                    # start the Go consumer
-# open Grafana, watch the dashboard update as Postgres changes
+docker compose up -d                       # bring up the full stack
+./deploy/debezium/register-connector.sh    # register the Postgres connector
+make run                                    # start the Go worker
+# open Grafana and watch it update as Postgres changes
 ```
 
-## Common tasks
+> [!TIP]
+> Credentials are local only dev defaults. Tear everything down with
+> `docker compose down -v`.
 
-```sh
-make build      # go build ./... + worker binary
-make test       # go test ./...
-make lint       # go vet + golangci-lint
-make run        # run the worker against the local stack
-```
+---
 
-## Local stack
+## 🧱 Stack
 
-`docker compose up -d` brings up the full pipeline locally (credentials are
-local-only dev defaults).
+| Layer | Tech |
+| ----- | ---- |
+| Source | **PostgreSQL** with logical replication |
+| Capture | **Debezium** on Kafka Connect (`pgoutput`) |
+| Transport | **Apache Kafka** in KRaft mode |
+| Worker | **Go** (this repo) |
+| Analytics | **ClickHouse** (`ReplacingMergeTree`) |
+| Dashboard | **Grafana** |
+| Metrics | **Prometheus** |
+| Local stack | **Docker Compose** |
+| CI | **GitHub Actions** |
 
-| Service       | Host address              | Notes                                |
-| ------------- | ------------------------- | ------------------------------------ |
-| Postgres      | `localhost:5432`          | user/pass/db = `cdc` / `cdc` / `cdc` |
-| Kafka         | `localhost:29092`         | PLAINTEXT bootstrap for host clients |
-| Kafka Connect | `http://localhost:8083`   | Debezium connector REST API          |
-| ClickHouse    | `localhost:8123` / `9000` | HTTP / native; analytics store       |
-| Grafana       | `http://localhost:3000`   | dashboards over ClickHouse + metrics |
-| Prometheus    | `http://localhost:9090`   | scrapes the worker `/metrics`        |
+**Prerequisites:** Go 1.26+, Docker + Docker Compose,
+[golangci-lint](https://golangci-lint.run) v2.
 
-```sh
-docker compose up -d       # start
-docker compose ps          # check health
-docker compose down -v     # stop and remove volumes
-```
+---
 
-## Prerequisites
+## 📚 Docs
 
-- Go 1.26+
-- Docker + Docker Compose
-- [golangci-lint](https://golangci-lint.run) v2
+| Doc | What is inside |
+| --- | -------------- |
+| **[DESIGN.md](DESIGN.md)** | How it works and why, with the tradeoffs spelled out. |
+| **[ROADMAP.md](ROADMAP.md)** | The phase by phase build plan. |
 
-## Documentation
+---
 
-- **[DESIGN.md](DESIGN.md)** - how it works, components, and design decisions.
-- **[docs/architecture.html](docs/architecture.html)** - interactive architecture diagram (open in a browser).
-- **[ROADMAP.md](ROADMAP.md)** - the full phase-by-phase build plan.
+<div align="center">
 
-## CI
+Built as a focused take on a real backend problem: correct, observable delivery
+into a columnar store.
 
-Every PR and push to `main` runs [CI](.github/workflows/ci.yml): `go build`,
-`go vet`, `go test`, and `golangci-lint run`. CI must be green to merge.
+</div>
