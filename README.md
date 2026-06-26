@@ -70,7 +70,7 @@ the connector, builds and runs the worker, and starts a load generator writing a
 steady stream of inserts/updates/deletes to Postgres. It prints the Grafana
 (`:3000`) and Prometheus (`:9090`) URLs and stays running so you can watch the
 **CDC Analytics** panels move and consumer lag stay near zero on **CDC Pipeline
-Health**. Press Ctrl-C to stop — it removes the generated rows and leaves the
+Health**. Press Ctrl-C to stop: it removes the generated rows and leaves the
 stack up.
 
 ### Services
@@ -85,13 +85,13 @@ stack up.
 | Prometheus | `http://localhost:9090` | scrapes the worker `/metrics` |
 
 Datasources (Prometheus + ClickHouse) and dashboards are **provisioned** from
-`deploy/grafana/` and `deploy/prometheus/` — nothing to click. Two dashboards
+`deploy/grafana/` and `deploy/prometheus/`, nothing to click. Two dashboards
 load under the **CDC** folder:
 
-- **CDC Pipeline Health** (Prometheus) — throughput, consumer lag, flush latency,
+- **CDC Pipeline Health** (Prometheus): throughput, consumer lag, flush latency,
   errors. Prometheus scrapes the worker at `host.docker.internal:9100`, so the
   worker must be running on the host (`make run`) for it to populate.
-- **CDC Analytics (ClickHouse)** — the payoff: live customers/orders, revenue,
+- **CDC Analytics (ClickHouse)**: the payoff is live customers/orders, revenue,
   orders by status, top customers, customers by country, all over the
   current-state view (`FINAL WHERE _is_deleted = 0`). Panels reflect Postgres
   writes within seconds.
@@ -121,6 +121,42 @@ make test    # run tests
 make lint    # go vet + golangci-lint
 make run     # run the worker against the local stack
 ```
+
+---
+
+## ⚙️ Configuration
+
+The worker is fully env driven: nothing is hard coded, and it runs with no
+variables set (every one has a built-in default). Set a `CDC_*` variable to
+override. Full reference with the compose stack variables is in
+[.env.example](.env.example).
+
+| Variable | Default | What it controls |
+| -------- | ------- | ---------------- |
+| `CDC_KAFKA_BROKERS` | `localhost:29092` | Kafka brokers, comma separated `host:port` |
+| `CDC_KAFKA_GROUP` | `cdc-clickhouse-sink` | consumer group id |
+| `CDC_KAFKA_TOPICS` | `cdc.public.customers,cdc.public.orders` | topics to consume, comma separated |
+| `CDC_CLICKHOUSE_DSN` | `clickhouse://default:@localhost:9000/cdc` | ClickHouse native DSN |
+| `CDC_CLICKHOUSE_DIAL_TIMEOUT` | `5s` | bound the initial connect |
+| `CDC_CLICKHOUSE_READ_TIMEOUT` | `30s` | bound a stalled read or write |
+| `CDC_BATCH_SIZE` | `1000` | rows buffered before a flush |
+| `CDC_FLUSH_INTERVAL` | `1s` | max time between flushes |
+| `CDC_RETRY_BASE` | `1s` | first flush retry backoff (doubles each attempt) |
+| `CDC_RETRY_MAX` | `30s` | cap on the flush retry backoff |
+| `CDC_LAG_INTERVAL` | `5s` | how often to sample consumer lag |
+| `CDC_METRICS_ADDR` | `:9100` | `host:port` serving Prometheus `/metrics` |
+| `CDC_DLQ_TOPIC_SUFFIX` | `.dlq` | suffix forming a topic's dead-letter topic |
+| `CDC_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+
+---
+
+## 🔒 Security
+
+Every push and pull request runs a [security workflow](.github/workflows/security.yml):
+`govulncheck` (Go vulnerabilities), `gosec` (static analysis), CodeQL, Trivy
+(dependencies and config), and `gitleaks` (secret scanning). Dependency and
+action updates land via Dependabot. See [SECURITY.md](SECURITY.md) to report an
+issue.
 
 ---
 
