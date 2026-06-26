@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CDC Pipeline - System Architecture</title>
+<style>
+  :root {
+    --bg: #0a0e16;
+    --panel: #121a28;
+    --panel-2: #0e1521;
+    --ink: #e6edf3;
+    --muted: #8b98a9;
+    --faint: #5d6b7d;
+    --line: #263244;
+    --pg: #4a90d9;
+    --debezium: #d98a3a;
+    --kafka: #c14f4f;
+    --go: #4fb3c1;
+    --click: #d9c14a;
+    --grafana: #d9663a;
+    --prom: #c1564a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: radial-gradient(1400px 700px at 30% -8%, #16202e 0%, var(--bg) 62%);
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 44px 24px 72px;
+  }
+  header { max-width: 1240px; margin: 0 auto 36px; }
+  h1 { font-size: 27px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .subtitle { color: var(--muted); font-size: 14.5px; max-width: 760px; line-height: 1.55; margin: 0; }
+
+  .canvas {
+    max-width: 1240px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 1fr 300px;
+    gap: 22px;
+    align-items: start;
+  }
+
+  /* ---- planes (left column) ---- */
+  .planes { display: flex; flex-direction: column; gap: 0; }
+
+  .plane {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--accent, var(--line));
+    border-radius: 14px;
+    padding: 16px 18px 18px 18px;
+  }
+  .plane-label {
+    font-size: 10.5px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent, var(--muted));
+    font-weight: 700;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .plane-label .meta { color: var(--faint); font-weight: 500; letter-spacing: .02em; text-transform: none; }
+
+  .row { display: flex; gap: 14px; flex-wrap: wrap; }
+
+  .card {
+    flex: 1 1 0;
+    min-width: 180px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    padding: 14px 14px 15px;
+  }
+  .card .title { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 14.5px; }
+  .card .title .ico { font-size: 18px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 3px; line-height: 1.4; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+  .chip {
+    font-size: 11px;
+    color: var(--ink);
+    background: #0a111c;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 4px 9px;
+    white-space: nowrap;
+  }
+  .chip.k { color: var(--accent, var(--muted)); }
+  code { font-family: "SF Mono", ui-monospace, "Cascadia Code", Menlo, monospace; font-size: .92em; }
+
+  /* worker internal pipeline */
+  .pipe { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; margin-top: 12px; }
+  .stage {
+    flex: 1 1 0;
+    min-width: 118px;
+    background: #0a111c;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 10px 10px;
+    text-align: center;
+  }
+  .stage .sname { font-weight: 600; font-size: 12.5px; }
+  .stage .sdesc { color: var(--faint); font-size: 10.5px; margin-top: 3px; line-height: 1.35; }
+  .pipe .conn {
+    flex: 0 0 26px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--go); font-size: 16px;
+  }
+
+  /* connectors between planes */
+  .between {
+    display: flex; align-items: center; justify-content: center;
+    gap: 9px;
+    padding: 7px 0;
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+  .between .v { color: var(--faint); font-size: 15px; line-height: 1; }
+  .between .lbl { background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px; }
+
+  /* ---- observability rail (right column) ---- */
+  .rail {
+    background: var(--panel);
+    border: 1px dashed #3a4a5e;
+    border-radius: 14px;
+    padding: 16px 16px 18px;
+    position: sticky;
+    top: 20px;
+  }
+  .rail .plane-label { color: var(--prom); }
+  .rail .card { margin-bottom: 12px; }
+  .rail .card:last-child { margin-bottom: 0; }
+  .rail .flowline {
+    font-size: 11.5px; color: var(--muted); line-height: 1.5;
+    border-top: 1px solid var(--line); margin-top: 4px; padding-top: 12px;
+  }
+  .rail .flowline b { color: var(--ink); font-weight: 600; }
+
+  .note {
+    max-width: 1240px;
+    margin: 26px auto 0;
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+  .note .badge {
+    display:inline-block; background: var(--panel-2); border:1px solid var(--line);
+    border-radius:6px; padding:1px 7px; color:var(--ink);
+  }
+
+  @media (max-width: 940px) {
+    .canvas { grid-template-columns: 1fr; }
+    .rail { position: static; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>CDC Pipeline - System Architecture</h1>
+    <p class="subtitle">
+      Change Data Capture from PostgreSQL into ClickHouse, organized as planes:
+      source, capture, transport, processing, storage, and serving, with a
+      cross-cutting observability plane. The Go worker (this repo) is broken into
+      its internal pipeline stages.
+    </p>
+  </header>
+
+  <div class="canvas">
+    <!-- ============ main planes ============ -->
+    <div class="planes">
+
+      <!-- SOURCE -->
+      <section class="plane" style="--accent: var(--pg)">
+        <div class="plane-label">Source plane <span class="meta">PostgreSQL / OLTP</span></div>
+        <div class="row">
+          <div class="card">
+            <div class="title"><span class="ico">🐘</span> PostgreSQL</div>
+            <div class="sub">Primary operational database, source of truth.</div>
+            <div class="chips">
+              <span class="chip">tables: orders, customers</span>
+              <span class="chip">write-ahead log (WAL)</span>
+              <span class="chip k">wal_level = logical</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="title"><span class="ico">🔁</span> Replication setup</div>
+            <div class="sub">Exposes changes to the capture layer.</div>
+            <div class="chips">
+              <span class="chip k">publication cdc_pub</span>
+              <span class="chip">replication slot</span>
+              <span class="chip">REPLICA IDENTITY FULL</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="between"><span class="v">▼</span><span class="lbl">logical replication via <code>pgoutput</code></span><span class="v">▼</span></div>
+
+      <!-- CAPTURE -->
+      <section class="plane" style="--accent: var(--debezium)">
+        <div class="plane-label">Capture plane <span class="meta">Kafka Connect</span></div>
+        <div class="row">
+          <div class="card">
+            <div class="title"><span class="ico">📡</span> Debezium PG connector</div>
+            <div class="sub">Runs inside the Kafka Connect runtime.</div>
+            <div class="chips">
+              <span class="chip">1. initial snapshot</span>
+              <span class="chip">2. stream WAL changes</span>
+              <span class="chip k">emits JSON change events</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="title"><span class="ico">🧩</span> Connect REST API</div>
+            <div class="sub">Connector lifecycle and config.</div>
+            <div class="chips">
+              <span class="chip"><code>:8083</code> register / status</span>
+              <span class="chip">offset + config topics</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="between"><span class="v">▼</span><span class="lbl">produce to per-table topics</span><span class="v">▼</span></div>
+
+      <!-- TRANSPORT -->
+      <section class="plane" style="--accent: var(--kafka)">
+        <div class="plane-label">Transport plane <span class="meta">Apache Kafka, KRaft mode</span></div>
+        <div class="row">
+          <div class="card">
+            <div class="title"><span class="ico">🪵</span> Kafka broker</div>
+            <div class="sub">Durable, partitioned, replayable log. No ZooKeeper.</div>
+            <div class="chips">
+              <span class="chip k">topic: cdc.public.orders</span>
+              <span class="chip k">topic: cdc.public.customers</span>
+              <span class="chip">partitioned, ordered per key</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="between"><span class="v">▼</span><span class="lbl">consumer group, manual offset commit</span><span class="v">▼</span></div>
+
+      <!-- PROCESSING -->
+      <section class="plane" style="--accent: var(--go)">
+        <div class="plane-label">Processing plane <span class="meta">Go worker - THIS REPO</span></div>
+        <div class="card" style="flex-basis:100%">
+          <div class="title"><span class="ico">⚙️</span> CDC sink worker</div>
+          <div class="sub">Internal pipeline: each Kafka message flows through these stages in order.</div>
+          <div class="pipe">
+            <div class="stage"><div class="sname">Consumer</div><div class="sdesc">read from topic, manual commit</div></div>
+            <div class="conn">›</div>
+            <div class="stage"><div class="sname">Parser</div><div class="sdesc">Debezium JSON → ChangeEvent</div></div>
+            <div class="conn">›</div>
+            <div class="stage"><div class="sname">Mapper</div><div class="sdesc">event → ClickHouse row</div></div>
+            <div class="conn">›</div>
+            <div class="stage"><div class="sname">Batcher</div><div class="sdesc">flush on size or time</div></div>
+            <div class="conn">›</div>
+            <div class="stage"><div class="sname">Sink</div><div class="sdesc">batch INSERT to ClickHouse</div></div>
+            <div class="conn">›</div>
+            <div class="stage"><div class="sname">Commit</div><div class="sdesc">offset only after flush ack</div></div>
+          </div>
+          <div class="chips">
+            <span class="chip k">exposes <code>/metrics</code></span>
+            <span class="chip">crash → replay (no data loss)</span>
+            <span class="chip">at-least-once → exactly-once in effect</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="between"><span class="v">▼</span><span class="lbl">batched INSERT</span><span class="v">▼</span></div>
+
+      <!-- STORAGE -->
+      <section class="plane" style="--accent: var(--click)">
+        <div class="plane-label">Storage plane <span class="meta">ClickHouse / columnar</span></div>
+        <div class="row">
+          <div class="card">
+            <div class="title"><span class="ico">📊</span> ReplacingMergeTree tables</div>
+            <div class="sub">One target table per source table.</div>
+            <div class="chips">
+              <span class="chip k">_version</span>
+              <span class="chip k">_is_deleted</span>
+              <span class="chip">updates collapse, deletes tombstone</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="title"><span class="ico">🔎</span> Current-state reads</div>
+            <div class="sub">Latest version per key.</div>
+            <div class="chips">
+              <span class="chip k">SELECT ... FINAL</span>
+              <span class="chip">WHERE _is_deleted = 0</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="between"><span class="v">▼</span><span class="lbl">SQL query</span><span class="v">▼</span></div>
+
+      <!-- SERVING -->
+      <section class="plane" style="--accent: var(--grafana)">
+        <div class="plane-label">Serving plane <span class="meta">analytics</span></div>
+        <div class="row">
+          <div class="card">
+            <div class="title"><span class="ico">📈</span> Grafana dashboards</div>
+            <div class="sub">Analytics over ClickHouse, refreshes within seconds of a Postgres change. No separate frontend.</div>
+            <div class="chips">
+              <span class="chip">ClickHouse datasource</span>
+              <span class="chip">live panels</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ observability rail ============ -->
+    <aside class="rail">
+      <div class="plane-label">Observability plane <span class="meta">cross-cutting</span></div>
+      <div class="card" style="--accent: var(--prom)">
+        <div class="title"><span class="ico">🔥</span> Prometheus</div>
+        <div class="sub">Scrapes the Go worker <code>/metrics</code> endpoint on an interval.</div>
+        <div class="chips">
+          <span class="chip">events processed</span>
+          <span class="chip">batch size / flush latency</span>
+          <span class="chip">consumer lag</span>
+        </div>
+      </div>
+      <div class="card" style="--accent: var(--grafana)">
+        <div class="title"><span class="ico">📟</span> Grafana (metrics)</div>
+        <div class="sub">Same Grafana, second datasource: pipeline health next to the analytics view.</div>
+      </div>
+      <div class="flowline">
+        <b>Flow:</b> Go worker → <b>Prometheus</b> (pull <code>/metrics</code>) → <b>Grafana</b>.
+        This plane observes the processing plane; it is not in the data path, so a
+        metrics outage never blocks ingestion.
+      </div>
+    </aside>
+  </div>
+
+  <p class="note">
+    <b>Correctness:</b> Kafka delivery is at-least-once, but the worker commits offsets
+    only after ClickHouse acks the flush, and <span class="badge">ReplacingMergeTree</span>
+    collapses any replayed duplicate on <span class="badge">_version</span> - so the
+    end-to-end result is exactly-once in effect.
+    <br>See <b>DESIGN.md</b> for the full rationale and <b>ROADMAP.md</b> for the build plan.
+  </p>
+</body>
+</html>
