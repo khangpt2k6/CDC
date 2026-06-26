@@ -129,19 +129,56 @@ func (f *fakeDLQ) Send(_ context.Context, rec *kgo.Record, cause error) error {
 }
 
 // fakeBatcher collects added items so a test can confirm that good records
-// (including ones after a poison record) still reach the sink. It never reaches
-// the size threshold, so Add never auto-flushes.
+// (including ones after a poison record) still reach the sink. With maxRows == 0
+// it never reports ready, so the loop only flushes on its timer.
 type fakeBatcher struct {
-	added []batch.Item
+	added   []batch.Item
+	maxRows int
 }
 
-func (f *fakeBatcher) Add(_ context.Context, it batch.Item) (int64, bool, error) {
+func (f *fakeBatcher) Add(_ context.Context, it batch.Item) bool {
 	f.added = append(f.added, it)
-	return 0, false, nil
+	return f.maxRows > 0 && len(f.added) >= f.maxRows
 }
 
 func (f *fakeBatcher) Flush(context.Context) (int64, bool, error) { return 0, false, nil }
 func (f *fakeBatcher) Len() int                                   { return 0 }
+
+// stallingBatcher models a slow/paused ClickHouse: Flush fails failuresLeft
+// times, then succeeds. It tracks the max buffer depth seen so a test can assert
+// the buffer stayed bounded while the sink was stalled. maxRows mirrors the real
+// Batcher's threshold signal from Add.
+type stallingBatcher struct {
+	maxRows      int
+	failuresLeft int
+	err          error
+	buf          int   // current buffered items
+	maxSeen      int   // high-water mark of buf
+	flushed      []int // size of each successful flush
+}
+
+func (s *stallingBatcher) Add(_ context.Context, _ batch.Item) bool {
+	s.buf++
+	if s.buf > s.maxSeen {
+		s.maxSeen = s.buf
+	}
+	return s.buf >= s.maxRows
+}
+
+func (s *stallingBatcher) Flush(context.Context) (int64, bool, error) {
+	if s.buf == 0 {
+		return 0, false, nil
+	}
+	if s.failuresLeft > 0 {
+		s.failuresLeft--
+		return 0, false, s.err // buffer left intact, as the real Batcher does
+	}
+	s.flushed = append(s.flushed, s.buf)
+	s.buf = 0
+	return 0, true, nil
+}
+
+func (s *stallingBatcher) Len() int { return s.buf }
 
 // record builds a Kafka record on a tracked topic with the given value bytes.
 func record(value string) *kgo.Record {
@@ -164,9 +201,20 @@ const (
 func runLoop(t *testing.T, recs []*kgo.Record, dl deadLetterer, b adder) (*fakePoller, error) {
 	t.Helper()
 	fp := &fakePoller{batches: [][]*kgo.Record{recs}}
-	cfg := config.Config{BatchSize: 1000, FlushInterval: 10 * time.Millisecond}
+	cfg := testCfg()
 	err := run(context.Background(), cfg, fp, dl, b)
 	return fp, err
+}
+
+// testCfg is a fast loop config: a short flush interval and sub-millisecond retry
+// backoff so a stalled-sink test recovers quickly.
+func testCfg() config.Config {
+	return config.Config{
+		BatchSize:     1000,
+		FlushInterval: 10 * time.Millisecond,
+		RetryBase:     time.Millisecond,
+		RetryMax:      4 * time.Millisecond,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -282,5 +330,88 @@ func TestDLQTotalUnchangedOnSkips(t *testing.T) {
 
 	if got := testutil.ToFloat64(metrics.DLQTotal) - before; got != 0 {
 		t.Errorf("dlq_total moved by %v on non-poison events, want 0", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue 2.5 (bounded buffer + auto-resume): a slow/paused ClickHouse must not let
+// the buffer grow unbounded, and the pipeline must resume once it recovers. These
+// drive the real run() loop with a batcher whose flush fails N times then
+// succeeds, modelling a stalled then recovered sink.
+// ---------------------------------------------------------------------------
+
+// TestRunBoundedAndResumesOnStalledSink feeds a full batch through a batcher whose
+// flush fails twice before succeeding. It asserts: the buffer never exceeds the
+// batch threshold while stalled (bounded memory), the flush is retried (metric
+// rises by the failure count), the rows eventually land, and the offset is
+// committed only after recovery.
+func TestRunBoundedAndResumesOnStalledSink(t *testing.T) {
+	beforeRetries := testutil.ToFloat64(metrics.SinkRetries)
+
+	const maxRows = 3
+	sb := &stallingBatcher{maxRows: maxRows, failuresLeft: 2, err: errors.New("clickhouse stalled")}
+
+	recs := []*kgo.Record{
+		record(fmtRecord(goodCustomer, 1)),
+		record(fmtRecord(goodCustomer, 2)),
+		record(fmtRecord(goodCustomer, 3)),
+	}
+	fp, err := runLoop(t, recs, &fakeDLQ{}, sb)
+	if err != nil {
+		t.Fatalf("run returned %v, want nil (sink recovered)", err)
+	}
+
+	// Bounded: the buffer never grew past the threshold despite the stall.
+	if sb.maxSeen > maxRows {
+		t.Errorf("buffer high-water mark = %d, want <= %d (memory must stay bounded)", sb.maxSeen, maxRows)
+	}
+	// Resumed: the buffered rows eventually flushed exactly once they landed.
+	if len(sb.flushed) != 1 || sb.flushed[0] != maxRows {
+		t.Errorf("successful flushes = %v, want one flush of %d rows", sb.flushed, maxRows)
+	}
+	if sb.buf != 0 {
+		t.Errorf("buffer = %d after recovery, want 0 (drained)", sb.buf)
+	}
+	// Retried: the metric rose once per failed attempt.
+	if got := testutil.ToFloat64(metrics.SinkRetries) - beforeRetries; got != 2 {
+		t.Errorf("cdc_sink_retries_total rose by %v, want 2 (one per failed flush)", got)
+	}
+	// Committed only after the flush succeeded.
+	if len(fp.committed) != len(recs) {
+		t.Errorf("committed %d records, want %d (offset advances only after a successful flush)", len(fp.committed), len(recs))
+	}
+}
+
+// TestRunUnblocksOnShutdownDuringBackoff proves a never-recovering sink does not
+// wedge the worker: with the context cancelled, run() returns promptly with the
+// context error instead of retrying forever.
+func TestRunUnblocksOnShutdownDuringBackoff(t *testing.T) {
+	// A long backoff parks the loop in retry.Do's sleep; cancelling the ctx must
+	// unblock it well before the delay elapses.
+	cfg := config.Config{
+		BatchSize:     1000,
+		FlushInterval: 10 * time.Millisecond,
+		RetryBase:     time.Hour,
+		RetryMax:      time.Hour,
+	}
+	sb := &stallingBatcher{maxRows: 1, failuresLeft: 1 << 30, err: errors.New("never recovers")}
+	fp := &fakePoller{batches: [][]*kgo.Record{{record(fmtRecord(goodCustomer, 1))}}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := run(ctx, cfg, fp, &fakeDLQ{}, sb)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("run returned %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("run took %v to unblock on shutdown, want prompt return", elapsed)
+	}
+	if len(fp.committed) != 0 {
+		t.Errorf("committed %d records despite never flushing, want 0", len(fp.committed))
 	}
 }

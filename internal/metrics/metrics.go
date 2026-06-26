@@ -21,6 +21,15 @@ var DLQTotal = promauto.NewCounter(prometheus.CounterOpts{
 	Help: "Total change events routed to the dead-letter topic (unparseable or unmappable).",
 })
 
+// SinkRetries counts ClickHouse flush attempts that failed and were retried with
+// backoff (Issue 2.5). Each increment is one backed-off retry; a rising value
+// means the sink is slow or stalled and the consumer is applying backpressure
+// (not polling Kafka) until it recovers.
+var SinkRetries = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "cdc_sink_retries_total",
+	Help: "Total ClickHouse flush attempts retried after a failure (sink slow or stalled).",
+})
+
 // Handler returns an http.Handler serving the registered metrics in Prometheus
 // text format, for mounting at /metrics.
 func Handler() http.Handler {

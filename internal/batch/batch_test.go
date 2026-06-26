@@ -34,36 +34,45 @@ func item(table string, id int, offset int64) batch.Item {
 	return batch.Item{Table: table, Row: []any{int64(id)}, Offset: offset}
 }
 
-func TestAddBelowThresholdDoesNotFlush(t *testing.T) {
+func TestAddBelowThresholdNotReady(t *testing.T) {
 	sink := &fakeSink{}
 	b := batch.New(sink, 3)
 
-	_, flushed, err := b.Add(context.Background(), item("orders", 1, 10))
-	if err != nil || flushed {
-		t.Fatalf("Add() = flushed %v, err %v; want false, nil", flushed, err)
+	if ready := b.Add(context.Background(), item("orders", 1, 10)); ready {
+		t.Fatal("Add() ready before reaching threshold")
 	}
-	if _, flushed, _ := b.Add(context.Background(), item("orders", 2, 11)); flushed {
-		t.Fatal("Add() flushed before reaching threshold")
+	if ready := b.Add(context.Background(), item("orders", 2, 11)); ready {
+		t.Fatal("Add() ready before reaching threshold")
 	}
 	if len(sink.calls) != 0 {
-		t.Errorf("sink called %d times, want 0", len(sink.calls))
+		t.Errorf("sink called %d times, want 0 (Add never flushes)", len(sink.calls))
 	}
 	if b.Len() != 2 {
 		t.Errorf("Len() = %d, want 2", b.Len())
 	}
 }
 
-func TestAddReachingThresholdFlushes(t *testing.T) {
+func TestAddReachingThresholdSignalsReadyButDoesNotFlush(t *testing.T) {
 	sink := &fakeSink{}
 	b := batch.New(sink, 2)
 
-	_, _, _ = b.Add(context.Background(), item("orders", 1, 10))
-	off, flushed, err := b.Add(context.Background(), item("orders", 2, 11))
-	if err != nil {
-		t.Fatalf("Add() error = %v", err)
+	if ready := b.Add(context.Background(), item("orders", 1, 10)); ready {
+		t.Fatal("Add() ready before threshold")
 	}
-	if !flushed {
-		t.Fatal("Add() did not flush at threshold")
+	if ready := b.Add(context.Background(), item("orders", 2, 11)); !ready {
+		t.Fatal("Add() not ready at threshold")
+	}
+	// Add must NOT flush; the caller owns the flush. Buffer stays full until then.
+	if len(sink.calls) != 0 {
+		t.Errorf("sink called %d times at threshold, want 0 (caller flushes)", len(sink.calls))
+	}
+	if b.Len() != 2 {
+		t.Errorf("Len() = %d, want 2 (buffer intact until caller flushes)", b.Len())
+	}
+
+	off, flushed, err := b.Flush(context.Background())
+	if err != nil || !flushed {
+		t.Fatalf("Flush() = flushed %v, err %v; want true, nil", flushed, err)
 	}
 	if off != 11 {
 		t.Errorf("flushed offset = %d, want 11", off)
@@ -80,9 +89,9 @@ func TestFlushGroupsByTable(t *testing.T) {
 	sink := &fakeSink{}
 	b := batch.New(sink, 100)
 
-	_, _, _ = b.Add(context.Background(), item("orders", 1, 10))
-	_, _, _ = b.Add(context.Background(), item("customers", 1, 11))
-	_, _, _ = b.Add(context.Background(), item("orders", 2, 12))
+	b.Add(context.Background(), item("orders", 1, 10))
+	b.Add(context.Background(), item("customers", 1, 11))
+	b.Add(context.Background(), item("orders", 2, 12))
 
 	off, flushed, err := b.Flush(context.Background())
 	if err != nil || !flushed {
@@ -119,7 +128,7 @@ func TestFlushEmptyIsNoop(t *testing.T) {
 func TestFlushErrorKeepsBuffer(t *testing.T) {
 	sink := &fakeSink{err: errors.New("clickhouse down")}
 	b := batch.New(sink, 10)
-	_, _, _ = b.Add(context.Background(), item("orders", 1, 10))
+	b.Add(context.Background(), item("orders", 1, 10))
 
 	_, _, err := b.Flush(context.Background())
 	if err == nil {
