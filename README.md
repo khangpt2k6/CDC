@@ -67,8 +67,13 @@ make run                                    # start the Go worker
 | Kafka | `localhost:29092` | PLAINTEXT bootstrap for host clients |
 | Kafka Connect | `http://localhost:8083` | Debezium connector REST API |
 | ClickHouse | `localhost:8123` / `9000` | HTTP / native |
-| Grafana | `http://localhost:3000` | dashboards over ClickHouse |
+| Grafana | `http://localhost:3000` | provisioned dashboards (anonymous admin, local-dev) |
 | Prometheus | `http://localhost:9090` | scrapes the worker `/metrics` |
+
+Datasources (Prometheus + ClickHouse) and dashboards are **provisioned** from
+`deploy/grafana/` and `deploy/prometheus/` — nothing to click. Prometheus scrapes
+the worker at `host.docker.internal:9100`, so the worker must be running on the
+host (`make run`) for the **CDC Pipeline Health** dashboard to populate.
 
 ---
 
