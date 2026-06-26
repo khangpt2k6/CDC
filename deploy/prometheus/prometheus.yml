@@ -1,0 +1,18 @@
+# Prometheus scrape config for the CDC stack.
+#
+# The Go worker runs on the HOST (`make run`), serving /metrics on :9100
+# (CDC_METRICS_ADDR). From inside the Prometheus container the host is reachable
+# as host.docker.internal (mapped to the host gateway via extra_hosts in
+# docker-compose.yml). If you change CDC_METRICS_ADDR, update the target here.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: cdc-worker
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,15 @@
+# Auto-load every dashboard JSON under /var/lib/grafana/dashboards (mounted from
+# deploy/grafana/dashboards). Adding a new dashboard is just dropping a JSON file
+# there — no click-ops.
+apiVersion: 1
+
+providers:
+  - name: cdc-dashboards
+    orgId: 1
+    folder: CDC
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

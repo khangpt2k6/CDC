@@ -20,6 +20,7 @@ import (
 	"github.com/khangpt2k6/CDC/internal/consumer"
 	"github.com/khangpt2k6/CDC/internal/debezium"
 	"github.com/khangpt2k6/CDC/internal/dlq"
+	"github.com/khangpt2k6/CDC/internal/lag"
 	"github.com/khangpt2k6/CDC/internal/metrics"
 	"github.com/khangpt2k6/CDC/internal/retry"
 	"github.com/khangpt2k6/CDC/internal/sink/clickhouse"
@@ -67,9 +68,14 @@ func main() {
 	}
 	defer deadletter.Close()
 
-	// Serve Prometheus metrics (currently just cdc_dlq_total) in the background.
-	// A bind failure is logged but non-fatal: it must not stop the data pipeline.
+	// Serve Prometheus metrics in the background. A bind failure is logged but
+	// non-fatal: it must not stop the data pipeline.
 	go serveMetrics(cfg.MetricsAddr)
+
+	// Sample consumer-group lag on a timer into the cdc_consumer_lag gauge, so
+	// /metrics shows how far behind the worker is and that it returns to zero
+	// once caught up. Stops with ctx on shutdown.
+	go lag.Run(ctx, cons, cfg.LagInterval)
 
 	slog.Info("cdc worker running",
 		"version", version,
@@ -142,7 +148,16 @@ func run(ctx context.Context, cfg config.Config, cons poller, deadletter deadLet
 			slog.Warn("clickhouse flush failed; backing off",
 				"attempt", attempt, "delay", delay.String(), "err", err)
 		}, func() error {
-			_, _, ferr := batcher.Flush(fctx)
+			// Capture the buffer depth before the flush clears it so a successful
+			// flush can attribute the right row count.
+			n := batcher.Len()
+			start := time.Now()
+			_, flushed, ferr := batcher.Flush(fctx)
+			metrics.FlushDuration.Observe(time.Since(start).Seconds())
+			if ferr == nil && flushed {
+				metrics.BatchesFlushed.Inc()
+				metrics.RowsWritten.Add(float64(n))
+			}
 			return ferr
 		})
 	}
@@ -167,6 +182,7 @@ func run(ctx context.Context, cfg config.Config, cons poller, deadletter deadLet
 		if err != nil {
 			return err
 		}
+		metrics.EventsConsumed.Add(float64(len(recs)))
 
 		for _, r := range recs {
 			pending = append(pending, r)
@@ -211,6 +227,7 @@ func run(ctx context.Context, cfg config.Config, cons poller, deadletter deadLet
 				return err
 			}
 		}
+		metrics.BufferedRows.Set(float64(batcher.Len()))
 	}
 }
 

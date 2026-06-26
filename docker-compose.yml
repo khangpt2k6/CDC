@@ -132,7 +132,58 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
 
+  # Prometheus scrapes the worker's /metrics. The worker runs on the HOST
+  # (`make run`), not in compose, so the scrape target is host.docker.internal;
+  # extra_hosts maps that to the host gateway on Linux too (it is built in on
+  # Docker Desktop for Mac/Windows). See deploy/prometheus/prometheus.yml.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: cdc-prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  # Grafana with provisioned datasources (Prometheus + ClickHouse) and
+  # dashboards — no click-ops. The ClickHouse datasource plugin is installed at
+  # boot. Local-dev only: anonymous admin, no login.
+  grafana:
+    image: grafana/grafana-oss:11.2.0
+    container_name: cdc-grafana
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s # plugin install on first boot is slow
+
 volumes:
   kafka-data:
   postgres-data:
   clickhouse-data:
+  prometheus-data:
+  grafana-data:

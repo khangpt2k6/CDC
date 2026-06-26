@@ -59,6 +59,20 @@ make run                                    # start the Go worker
 > Credentials are local only dev defaults. Tear everything down with
 > `docker compose down -v`.
 
+### One-command demo
+
+```sh
+bash deploy/demo.sh            # or --fresh for a cold start
+```
+
+`deploy/demo.sh` does the whole sequence for you: brings the stack up, registers
+the connector, builds and runs the worker, and starts a load generator writing a
+steady stream of inserts/updates/deletes to Postgres. It prints the Grafana
+(`:3000`) and Prometheus (`:9090`) URLs and stays running so you can watch the
+**CDC Analytics** panels move and consumer lag stay near zero on **CDC Pipeline
+Health**. Press Ctrl-C to stop — it removes the generated rows and leaves the
+stack up.
+
 ### Services
 
 | Service | Address | Notes |
@@ -67,8 +81,20 @@ make run                                    # start the Go worker
 | Kafka | `localhost:29092` | PLAINTEXT bootstrap for host clients |
 | Kafka Connect | `http://localhost:8083` | Debezium connector REST API |
 | ClickHouse | `localhost:8123` / `9000` | HTTP / native |
-| Grafana | `http://localhost:3000` | dashboards over ClickHouse |
+| Grafana | `http://localhost:3000` | provisioned dashboards (anonymous admin, local-dev) |
 | Prometheus | `http://localhost:9090` | scrapes the worker `/metrics` |
+
+Datasources (Prometheus + ClickHouse) and dashboards are **provisioned** from
+`deploy/grafana/` and `deploy/prometheus/` — nothing to click. Two dashboards
+load under the **CDC** folder:
+
+- **CDC Pipeline Health** (Prometheus) — throughput, consumer lag, flush latency,
+  errors. Prometheus scrapes the worker at `host.docker.internal:9100`, so the
+  worker must be running on the host (`make run`) for it to populate.
+- **CDC Analytics (ClickHouse)** — the payoff: live customers/orders, revenue,
+  orders by status, top customers, customers by country, all over the
+  current-state view (`FINAL WHERE _is_deleted = 0`). Panels reflect Postgres
+  writes within seconds.
 
 ---
 
