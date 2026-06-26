@@ -59,6 +59,20 @@ make run                                    # start the Go worker
 > Credentials are local only dev defaults. Tear everything down with
 > `docker compose down -v`.
 
+### One-command demo
+
+```sh
+bash deploy/demo.sh            # or --fresh for a cold start
+```
+
+`deploy/demo.sh` does the whole sequence for you: brings the stack up, registers
+the connector, builds and runs the worker, and starts a load generator writing a
+steady stream of inserts/updates/deletes to Postgres. It prints the Grafana
+(`:3000`) and Prometheus (`:9090`) URLs and stays running so you can watch the
+**CDC Analytics** panels move and consumer lag stay near zero on **CDC Pipeline
+Health**. Press Ctrl-C to stop — it removes the generated rows and leaves the
+stack up.
+
 ### Services
 
 | Service | Address | Notes |

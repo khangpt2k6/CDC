@@ -27,6 +27,8 @@ cd "$REPO_ROOT"
 
 # shellcheck source=deploy/lib/verify.sh
 source "$SCRIPT_DIR/lib/verify.sh"
+# shellcheck source=deploy/lib/loadgen.sh
+source "$SCRIPT_DIR/lib/loadgen.sh"
 
 COMPOSE=${COMPOSE:-docker compose}
 
@@ -129,38 +131,13 @@ done
 # 1. Background load generator: steady inserts/updates/deletes under sentinel ids
 # ------------------------------------------------------------------------------
 #
-# Runs in a subshell until killed by the EXIT trap. Each round inserts a sentinel
-# customer + order, updates the order, and occasionally deletes an older sentinel
-# order -- exercising c/u/d continuously so a kill lands mid-stream. All rows are
-# tagged with SENTINEL_EMAIL_PREFIX so the final cleanup is exact. Errors are
-# swallowed (set +e) so a transient failure during a worker kill never aborts the
+# generate_load (deploy/lib/loadgen.sh) runs c/u/d continuously under the sentinel
+# prefix until killed by the EXIT trap, so a worker kill lands mid-stream. Errors
+# are swallowed inside it, so a transient failure during a kill never aborts the
 # generator; correctness is judged by the final parity check, not the generator.
 
 echo "-- starting background load generator --"
-(
-  set +e
-  i=0
-  while true; do
-    i=$((i + 1))
-    email="${SENTINEL_EMAIL_PREFIX}-${i}@example.com"
-    pg_exec "INSERT INTO public.customers (email, full_name, country)
-             VALUES ('$email', 'Load $i', 'US')
-             ON CONFLICT (email) DO NOTHING;" >/dev/null 2>&1
-    pg_exec "INSERT INTO public.orders (customer_id, status, total_amount, currency)
-             SELECT id, 'pending', 10.00, 'USD' FROM public.customers
-             WHERE email = '$email';" >/dev/null 2>&1
-    # Update the most recent sentinel order's status/amount.
-    pg_exec "UPDATE public.orders SET status = 'paid', total_amount = 20.00 + $i, updated_at = now()
-             WHERE customer_id = (SELECT id FROM public.customers WHERE email = '$email');" >/dev/null 2>&1
-    # Every 5th round, delete an older sentinel order to exercise tombstones.
-    if [ $((i % 5)) -eq 0 ] && [ "$i" -gt 5 ]; then
-      old="${SENTINEL_EMAIL_PREFIX}-$((i - 5))@example.com"
-      pg_exec "DELETE FROM public.orders
-               WHERE customer_id = (SELECT id FROM public.customers WHERE email = '$old');" >/dev/null 2>&1
-    fi
-    sleep 0.2
-  done
-) &
+generate_load "$SENTINEL_EMAIL_PREFIX" 0.2 &
 GEN_PID=$!
 _pass "load generator started (pid $GEN_PID)"
 
@@ -241,11 +218,7 @@ done
 # 4. Cleanup sentinel rows so a rerun against the same volume starts clean.
 # ------------------------------------------------------------------------------
 
-pg_exec "DELETE FROM public.orders
-         WHERE customer_id IN (SELECT id FROM public.customers
-                               WHERE email LIKE '${SENTINEL_EMAIL_PREFIX}-%');" >/dev/null 2>&1
-pg_exec "DELETE FROM public.customers
-         WHERE email LIKE '${SENTINEL_EMAIL_PREFIX}-%';" >/dev/null 2>&1
+cleanup_load "$SENTINEL_EMAIL_PREFIX"
 
 # ------------------------------------------------------------------------------
 # Result
