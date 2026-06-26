@@ -21,6 +21,7 @@ import (
 	"github.com/khangpt2k6/CDC/internal/debezium"
 	"github.com/khangpt2k6/CDC/internal/dlq"
 	"github.com/khangpt2k6/CDC/internal/metrics"
+	"github.com/khangpt2k6/CDC/internal/retry"
 	"github.com/khangpt2k6/CDC/internal/sink/clickhouse"
 )
 
@@ -41,7 +42,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	sink, err := clickhouse.Open(ctx, cfg.ClickHouseDSN)
+	sink, err := clickhouse.Open(ctx, cfg.ClickHouseDSN, cfg.ClickHouseDialTimeout, cfg.ClickHouseReadTimeout)
 	if err != nil {
 		slog.Error("connect ClickHouse", "err", err)
 		os.Exit(1)
@@ -100,9 +101,11 @@ type deadLetterer interface {
 	Send(context.Context, *kgo.Record, error) error
 }
 
-// adder is the batching sink the loop drives. *batch.Batcher satisfies it.
+// adder is the batching sink the loop drives. *batch.Batcher satisfies it. Add
+// only buffers and reports whether the buffer is full (ready to flush); the loop
+// owns every flush so it can wrap it in retry/backoff.
 type adder interface {
-	Add(context.Context, batch.Item) (int64, bool, error)
+	Add(context.Context, batch.Item) (ready bool)
 	Flush(context.Context) (int64, bool, error)
 	Len() int
 }
@@ -126,11 +129,29 @@ func run(ctx context.Context, cfg config.Config, cons poller, deadletter deadLet
 		return nil
 	}
 
+	// flushWithRetry is the single flush chokepoint: it retries the batcher flush
+	// with capped backoff until ClickHouse accepts it (or fctx is cancelled). A
+	// failed flush leaves the buffer intact, so a retry re-drives the same rows;
+	// because the blocked loop stops polling Kafka while it waits, the buffer
+	// cannot grow (backpressure) and the pipeline resumes the moment the sink
+	// recovers (Issue 2.5).
+	retryCfg := retry.Config{Base: cfg.RetryBase, Max: cfg.RetryMax}
+	flushWithRetry := func(fctx context.Context) error {
+		return retry.Do(fctx, retryCfg, func(attempt int, delay time.Duration, err error) {
+			metrics.SinkRetries.Inc()
+			slog.Warn("clickhouse flush failed; backing off",
+				"attempt", attempt, "delay", delay.String(), "err", err)
+		}, func() error {
+			_, _, ferr := batcher.Flush(fctx)
+			return ferr
+		})
+	}
+
 	for {
 		if err := ctx.Err(); err != nil {
 			// Best-effort final flush + commit on shutdown, off the cancelled ctx.
 			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if _, _, ferr := batcher.Flush(shutCtx); ferr == nil && batcher.Len() == 0 {
+			if ferr := flushWithRetry(shutCtx); ferr == nil && batcher.Len() == 0 {
 				_ = commit(shutCtx)
 			}
 			cancel()
@@ -168,11 +189,12 @@ func run(ctx context.Context, cfg config.Config, cons poller, deadletter deadLet
 					"topic", r.Topic, "partition", r.Partition, "offset", r.Offset, "err", err)
 				continue
 			}
-			_, flushed, ferr := batcher.Add(ctx, it)
-			if ferr != nil {
-				return ferr
-			}
-			if flushed {
+			if ready := batcher.Add(ctx, it); ready {
+				// Buffer is full: flush it (retrying past a stalled sink) and
+				// commit only after it lands.
+				if ferr := flushWithRetry(ctx); ferr != nil {
+					return ferr
+				}
 				if err := commit(ctx); err != nil {
 					return err
 				}
@@ -181,7 +203,7 @@ func run(ctx context.Context, cfg config.Config, cons poller, deadletter deadLet
 
 		// Time-based flush; the buffer being empty afterwards means every
 		// pending record is now either written or intentionally skipped.
-		if _, _, ferr := batcher.Flush(ctx); ferr != nil {
+		if ferr := flushWithRetry(ctx); ferr != nil {
 			return ferr
 		}
 		if batcher.Len() == 0 {

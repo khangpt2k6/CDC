@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -19,11 +20,21 @@ type Sink struct {
 }
 
 // Open connects to ClickHouse using a clickhouse:// DSN and verifies the
-// connection with a ping.
-func Open(ctx context.Context, dsn string) (*Sink, error) {
+// connection with a ping. dialTimeout bounds the initial connect; readTimeout
+// bounds each read/write, so a *paused* server (e.g. `docker pause`, which leaves
+// the socket open but silent) surfaces as a timeout error the caller can retry,
+// rather than blocking the worker forever — batch.Send takes no context, so this
+// is the only bound on a stalled write. A zero value leaves the driver default.
+func Open(ctx context.Context, dsn string, dialTimeout, readTimeout time.Duration) (*Sink, error) {
 	opts, err := clickhouse.ParseDSN(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse: parse dsn: %w", err)
+	}
+	if dialTimeout > 0 {
+		opts.DialTimeout = dialTimeout
+	}
+	if readTimeout > 0 {
+		opts.ReadTimeout = readTimeout
 	}
 	conn, err := clickhouse.Open(opts)
 	if err != nil {

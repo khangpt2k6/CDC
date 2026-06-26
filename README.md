@@ -205,6 +205,14 @@ workflow so regressions cannot land.
   increments `cdc_dlq_total`, and keeps going. The DLQ send blocks before the
   offset advances, so a poison message is quarantined-or-replayed, never silently
   dropped.
+- **Why in-process retry instead of a buffer/queue for backpressure.** A slow or
+  paused ClickHouse must not let memory grow unbounded. The consume loop is a
+  single goroutine, so when a flush fails it simply retries with capped backoff
+  and stops polling Kafka until the sink recovers. That blocking *is* the
+  backpressure (no new records are fetched, no offset advances, the buffer can't
+  grow past one batch), and it resumes automatically the moment ClickHouse comes
+  back — no separate queue, no supervisor restart. A connection read timeout
+  ensures a *paused* server surfaces as a retryable error rather than a hang.
 - **Why a Go consumer instead of the off-the-shelf ClickHouse sink connector.**
   A connector would remove the Go entirely. Writing the sink in Go is a
   deliberate choice for control over batching and mapping, and to own the CDC

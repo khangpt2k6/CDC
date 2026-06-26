@@ -12,15 +12,19 @@ import (
 // ClickHouse sink. Every field comes from a CDC_* environment variable, with
 // the defaults applied by Load.
 type Config struct {
-	KafkaBrokers   []string      // CDC_KAFKA_BROKERS (comma-separated host:port)
-	KafkaGroup     string        // CDC_KAFKA_GROUP (consumer group id)
-	KafkaTopics    []string      // CDC_KAFKA_TOPICS (comma-separated topics)
-	ClickHouseDSN  string        // CDC_CLICKHOUSE_DSN
-	BatchSize      int           // CDC_BATCH_SIZE (rows per flush)
-	FlushInterval  time.Duration // CDC_FLUSH_INTERVAL (max time between flushes)
-	MetricsAddr    string        // CDC_METRICS_ADDR (host:port serving /metrics)
-	DLQTopicSuffix string        // CDC_DLQ_TOPIC_SUFFIX (appended to a source topic to form its dead-letter topic)
-	LogLevel       string        // CDC_LOG_LEVEL (debug|info|warn|error)
+	KafkaBrokers          []string      // CDC_KAFKA_BROKERS (comma-separated host:port)
+	KafkaGroup            string        // CDC_KAFKA_GROUP (consumer group id)
+	KafkaTopics           []string      // CDC_KAFKA_TOPICS (comma-separated topics)
+	ClickHouseDSN         string        // CDC_CLICKHOUSE_DSN
+	ClickHouseDialTimeout time.Duration // CDC_CLICKHOUSE_DIAL_TIMEOUT (bound the connect)
+	ClickHouseReadTimeout time.Duration // CDC_CLICKHOUSE_READ_TIMEOUT (bound a stalled read/write)
+	BatchSize             int           // CDC_BATCH_SIZE (rows per flush)
+	FlushInterval         time.Duration // CDC_FLUSH_INTERVAL (max time between flushes)
+	RetryBase             time.Duration // CDC_RETRY_BASE (first flush-retry backoff)
+	RetryMax              time.Duration // CDC_RETRY_MAX (flush-retry backoff cap)
+	MetricsAddr           string        // CDC_METRICS_ADDR (host:port serving /metrics)
+	DLQTopicSuffix        string        // CDC_DLQ_TOPIC_SUFFIX (appended to a source topic to form its dead-letter topic)
+	LogLevel              string        // CDC_LOG_LEVEL (debug|info|warn|error)
 }
 
 // Load builds a Config from getenv, applying a default for any variable that
@@ -48,14 +52,25 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	cfg.BatchSize = batch
 
-	flush, err := time.ParseDuration(get(getenv, "CDC_FLUSH_INTERVAL", "1s"))
-	if err != nil {
-		return Config{}, fmt.Errorf("CDC_FLUSH_INTERVAL: %w", err)
+	for _, d := range []struct {
+		key, def string
+		dst      *time.Duration
+	}{
+		{"CDC_FLUSH_INTERVAL", "1s", &cfg.FlushInterval},
+		{"CDC_RETRY_BASE", "1s", &cfg.RetryBase},
+		{"CDC_RETRY_MAX", "30s", &cfg.RetryMax},
+		{"CDC_CLICKHOUSE_DIAL_TIMEOUT", "5s", &cfg.ClickHouseDialTimeout},
+		{"CDC_CLICKHOUSE_READ_TIMEOUT", "30s", &cfg.ClickHouseReadTimeout},
+	} {
+		v, err := time.ParseDuration(get(getenv, d.key, d.def))
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: %w", d.key, err)
+		}
+		if v <= 0 {
+			return Config{}, fmt.Errorf("%s must be positive, got %s", d.key, v)
+		}
+		*d.dst = v
 	}
-	if flush <= 0 {
-		return Config{}, fmt.Errorf("CDC_FLUSH_INTERVAL must be positive, got %s", flush)
-	}
-	cfg.FlushInterval = flush
 
 	return cfg, nil
 }

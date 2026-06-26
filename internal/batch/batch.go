@@ -34,17 +34,17 @@ func New(sink Sink, maxRows int) *Batcher {
 // Len reports the number of buffered items.
 func (b *Batcher) Len() int { return len(b.buf) }
 
-// Add buffers it. When the buffer reaches maxRows it flushes and returns the
-// highest offset written with flushed=true; otherwise flushed is false.
-func (b *Batcher) Add(ctx context.Context, it Item) (offset int64, flushed bool, err error) {
+// Add buffers it and reports whether the buffer is now full. It does NOT flush:
+// when the buffer reaches maxRows it returns ready=true so the caller can drive
+// the flush (the caller wraps it in retry/backoff and commits offsets after it
+// succeeds). Keeping the flush out of Add gives the loop a single flush
+// chokepoint and leaves the buffer intact for replay if that flush fails.
+func (b *Batcher) Add(_ context.Context, it Item) (ready bool) {
 	b.buf = append(b.buf, it)
 	if it.Offset > b.highest {
 		b.highest = it.Offset
 	}
-	if len(b.buf) >= b.maxRows {
-		return b.Flush(ctx)
-	}
-	return 0, false, nil
+	return len(b.buf) >= b.maxRows
 }
 
 // Flush writes all buffered rows grouped by table and, on success, clears the
