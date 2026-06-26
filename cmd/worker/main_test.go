@@ -334,6 +334,42 @@ func TestDLQTotalUnchangedOnSkips(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Issue 3.1 (pipeline-health metrics): the loop must count throughput, rows
+// written, and batches flushed. Asserted via before/after counter deltas, like
+// the DLQ tests, so they don't depend on other tests' contributions.
+// ---------------------------------------------------------------------------
+
+// TestRunRecordsThroughputAndWriteMetrics feeds a full batch through a batcher
+// that flushes cleanly and asserts: every polled record is counted as consumed,
+// the buffered rows are counted as written, and exactly one batch is flushed.
+func TestRunRecordsThroughputAndWriteMetrics(t *testing.T) {
+	beforeConsumed := testutil.ToFloat64(metrics.EventsConsumed)
+	beforeRows := testutil.ToFloat64(metrics.RowsWritten)
+	beforeBatches := testutil.ToFloat64(metrics.BatchesFlushed)
+
+	const maxRows = 3
+	sb := &stallingBatcher{maxRows: maxRows} // failuresLeft 0: flushes succeed
+	recs := []*kgo.Record{
+		record(fmtRecord(goodCustomer, 1)),
+		record(fmtRecord(goodCustomer, 2)),
+		record(fmtRecord(goodCustomer, 3)),
+	}
+	if _, err := runLoop(t, recs, &fakeDLQ{}, sb); err != nil {
+		t.Fatalf("run returned %v, want nil", err)
+	}
+
+	if got := testutil.ToFloat64(metrics.EventsConsumed) - beforeConsumed; got != float64(len(recs)) {
+		t.Errorf("cdc_events_consumed_total rose by %v, want %d (one per polled record)", got, len(recs))
+	}
+	if got := testutil.ToFloat64(metrics.RowsWritten) - beforeRows; got != maxRows {
+		t.Errorf("cdc_rows_written_total rose by %v, want %d (buffered rows that landed)", got, maxRows)
+	}
+	if got := testutil.ToFloat64(metrics.BatchesFlushed) - beforeBatches; got != 1 {
+		t.Errorf("cdc_batches_flushed_total rose by %v, want 1 (one successful flush)", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Issue 2.5 (bounded buffer + auto-resume): a slow/paused ClickHouse must not let
 // the buffer grow unbounded, and the pipeline must resume once it recovers. These
 // drive the real run() loop with a batcher whose flush fails N times then
