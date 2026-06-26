@@ -71,9 +71,16 @@ make run                                    # start the Go worker
 | Prometheus | `http://localhost:9090` | scrapes the worker `/metrics` |
 
 Datasources (Prometheus + ClickHouse) and dashboards are **provisioned** from
-`deploy/grafana/` and `deploy/prometheus/` — nothing to click. Prometheus scrapes
-the worker at `host.docker.internal:9100`, so the worker must be running on the
-host (`make run`) for the **CDC Pipeline Health** dashboard to populate.
+`deploy/grafana/` and `deploy/prometheus/` — nothing to click. Two dashboards
+load under the **CDC** folder:
+
+- **CDC Pipeline Health** (Prometheus) — throughput, consumer lag, flush latency,
+  errors. Prometheus scrapes the worker at `host.docker.internal:9100`, so the
+  worker must be running on the host (`make run`) for it to populate.
+- **CDC Analytics (ClickHouse)** — the payoff: live customers/orders, revenue,
+  orders by status, top customers, customers by country, all over the
+  current-state view (`FINAL WHERE _is_deleted = 0`). Panels reflect Postgres
+  writes within seconds.
 
 ---
 
