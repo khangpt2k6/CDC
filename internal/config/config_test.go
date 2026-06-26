@@ -18,14 +18,15 @@ func TestLoadDefaults(t *testing.T) {
 	}
 
 	want := config.Config{
-		KafkaBrokers:  []string{"localhost:29092"},
-		KafkaGroup:    "cdc-clickhouse-sink",
-		KafkaTopics:   []string{"cdc.public.customers", "cdc.public.orders"},
-		ClickHouseDSN: "clickhouse://default:@localhost:9000/cdc",
-		BatchSize:     1000,
-		FlushInterval: time.Second,
-		MetricsAddr:   ":9100",
-		LogLevel:      "info",
+		KafkaBrokers:   []string{"localhost:29092"},
+		KafkaGroup:     "cdc-clickhouse-sink",
+		KafkaTopics:    []string{"cdc.public.customers", "cdc.public.orders"},
+		ClickHouseDSN:  "clickhouse://default:@localhost:9000/cdc",
+		BatchSize:      1000,
+		FlushInterval:  time.Second,
+		MetricsAddr:    ":9100",
+		DLQTopicSuffix: ".dlq",
+		LogLevel:       "info",
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("Load() defaults =\n  %+v\nwant\n  %+v", cfg, want)
@@ -34,14 +35,15 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadOverrides(t *testing.T) {
 	env := map[string]string{
-		"CDC_KAFKA_BROKERS":  "broker1:9092,broker2:9092",
-		"CDC_KAFKA_GROUP":    "g1",
-		"CDC_KAFKA_TOPICS":   "t1,t2",
-		"CDC_CLICKHOUSE_DSN": "clickhouse://h:9000/db",
-		"CDC_BATCH_SIZE":     "500",
-		"CDC_FLUSH_INTERVAL": "250ms",
-		"CDC_METRICS_ADDR":   ":1234",
-		"CDC_LOG_LEVEL":      "debug",
+		"CDC_KAFKA_BROKERS":    "broker1:9092,broker2:9092",
+		"CDC_KAFKA_GROUP":      "g1",
+		"CDC_KAFKA_TOPICS":     "t1,t2",
+		"CDC_CLICKHOUSE_DSN":   "clickhouse://h:9000/db",
+		"CDC_BATCH_SIZE":       "500",
+		"CDC_FLUSH_INTERVAL":   "250ms",
+		"CDC_METRICS_ADDR":     ":1234",
+		"CDC_DLQ_TOPIC_SUFFIX": ".deadletter",
+		"CDC_LOG_LEVEL":        "debug",
 	}
 	cfg, err := config.Load(func(k string) string { return env[k] })
 	if err != nil {
@@ -65,6 +67,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q, want debug", cfg.LogLevel)
+	}
+	if cfg.DLQTopicSuffix != ".deadletter" {
+		t.Errorf("DLQTopicSuffix = %q, want .deadletter", cfg.DLQTopicSuffix)
 	}
 }
 
