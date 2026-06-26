@@ -1,0 +1,21 @@
+# gitleaks configuration. Start from the bundled default ruleset, then allowlist
+# the local-only dev credentials that ship on purpose so they do not trip the
+# secret scan.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Local-only dev defaults that are safe to commit"
+# The example env file and the local stack init SQL intentionally carry the
+# throwaway cdc/cdc credentials used only by docker-compose on localhost.
+paths = [
+  '''\.env\.example''',
+  '''deploy/postgres/init\.sql''',
+  '''deploy/.*\.sh''',
+  '''docker-compose\.yml''',
+]
+# The fixed local password and DSN, allowlisted by value as a backstop.
+regexes = [
+  '''cdc:cdc@''',
+  '''PGPASSWORD=cdc''',
+]
