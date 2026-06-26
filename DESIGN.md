@@ -140,6 +140,30 @@ delivery is exactly once in effect even though Kafka delivers at least once.
 </details>
 
 <details>
+<summary><b>Why a dead letter topic for poison messages</b></summary>
+
+A single malformed or unmappable event must not wedge the consumer. The worker
+republishes the raw bytes (with the failure cause as Kafka headers) to a
+`<topic>.dlq` topic, increments `cdc_dlq_total`, and keeps going. The send blocks
+before the offset advances, so a poison message is quarantined or replayed, never
+silently dropped.
+
+</details>
+
+<details>
+<summary><b>Why in process retry instead of a queue for backpressure</b></summary>
+
+A slow or paused ClickHouse must not let memory grow without bound. The consume
+loop is a single goroutine, so when a flush fails it retries with capped backoff
+and stops polling Kafka until the sink recovers. That blocking is the
+backpressure: no new records are fetched, no offset advances, the buffer cannot
+grow past one batch, and it resumes the moment ClickHouse comes back. A
+connection read timeout makes a paused server surface as a retryable error rather
+than a hang.
+
+</details>
+
+<details>
 <summary><b>Why a Go worker, not the ready made ClickHouse sink connector</b></summary>
 
 A connector would remove the Go entirely. Writing the sink in Go is a deliberate
@@ -158,6 +182,28 @@ to end. In production the ready made connector would be worth a second look.
 | **No duplicates in effect** | `ReplacingMergeTree` dedupes replayed rows on `_version`, so at least once delivery reads as exactly once. |
 | **Ordering** | Per key order is preserved through Kafka partitions and the monotonic `_version`. The latest write wins after merge. |
 | **Full state, not just changes** | Debezium snapshots existing rows before streaming, so ClickHouse converges to the complete source state. |
+
+---
+
+## 🔬 Verifying correctness
+
+Three scripts drive the full stack end to end and assert the guarantees above,
+so correctness is proven rather than assumed. Each exits non zero on any failure.
+
+| Script | Proves |
+| ------ | ------ |
+| `deploy/verify-snapshot.sh` | Debezium's initial snapshot lands in ClickHouse, and later streaming changes arrive with no loss or duplicates. |
+| `deploy/verify-restart.sh` | The worker resumes from its committed offset after repeated `kill -9` under load. The ClickHouse `FINAL` view matches Postgres exactly: equal row counts and an all column checksum. |
+| `deploy/verify-parity.sh` | After a fixed mix of inserts, updates, and deletes, the `FINAL` view matches Postgres by both row count and content checksum, catching any dropped update or delete. |
+
+```sh
+bash deploy/verify-snapshot.sh             # verify against the current stack
+bash deploy/verify-restart.sh --fresh      # cold start: docker compose down -v first
+CYCLES=5 bash deploy/verify-restart.sh     # more kill and restart cycles
+```
+
+Pass `--fresh` to drop all volumes for a true cold start, or omit it to verify an
+already running stack.
 
 ---
 

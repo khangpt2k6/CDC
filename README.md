@@ -7,7 +7,7 @@
 Row changes flow out of the operational database and into a fast columnar store
 in seconds. The primary is never touched by a query.
 
-[![CI](https://github.com/khangpt2k6/CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/khangpt2k6/CDC/actions/workflows/ci.yml)
+[![CI](https://github.com/khangpt2k6/Slipstream_CDC/actions/workflows/ci.yml/badge.svg)](https://github.com/khangpt2k6/Slipstream_CDC/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)
 ![Kafka](https://img.shields.io/badge/Apache_Kafka-KRaft-231F20?logo=apachekafka&logoColor=white)
 ![ClickHouse](https://img.shields.io/badge/ClickHouse-analytics-FFCC01?logo=clickhouse&logoColor=black)
@@ -59,6 +59,17 @@ make run                                    # start the Go worker
 > Credentials are local only dev defaults. Tear everything down with
 > `docker compose down -v`.
 
+### Services
+
+| Service | Address | Notes |
+| ------- | ------- | ----- |
+| Postgres | `localhost:5432` | user / pass / db = `cdc` |
+| Kafka | `localhost:29092` | PLAINTEXT bootstrap for host clients |
+| Kafka Connect | `http://localhost:8083` | Debezium connector REST API |
+| ClickHouse | `localhost:8123` / `9000` | HTTP / native |
+| Grafana | `http://localhost:3000` | dashboards over ClickHouse |
+| Prometheus | `http://localhost:9090` | scrapes the worker `/metrics` |
+
 ---
 
 ## 🧱 Stack
@@ -70,13 +81,20 @@ make run                                    # start the Go worker
 | Transport | **Apache Kafka** in KRaft mode |
 | Worker | **Go** (this repo) |
 | Analytics | **ClickHouse** (`ReplacingMergeTree`) |
-| Dashboard | **Grafana** |
-| Metrics | **Prometheus** |
-| Local stack | **Docker Compose** |
-| CI | **GitHub Actions** |
+| Dashboard | **Grafana**, metrics by **Prometheus** |
+| Local stack | **Docker Compose**, CI by **GitHub Actions** |
 
 **Prerequisites:** Go 1.26+, Docker + Docker Compose,
 [golangci-lint](https://golangci-lint.run) v2.
+
+## 🛠️ Common tasks
+
+```sh
+make build   # build worker binary
+make test    # run tests
+make lint    # go vet + golangci-lint
+make run     # run the worker against the local stack
+```
 
 ---
 
@@ -84,7 +102,7 @@ make run                                    # start the Go worker
 
 | Doc | What is inside |
 | --- | -------------- |
-| **[DESIGN.md](DESIGN.md)** | How it works and why, with the tradeoffs spelled out. |
+| **[DESIGN.md](DESIGN.md)** | How it works, the tradeoffs, and how correctness is proven. |
 | **[ROADMAP.md](ROADMAP.md)** | The phase by phase build plan. |
 
 ---
