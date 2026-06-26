@@ -20,6 +20,7 @@ import (
 	"github.com/khangpt2k6/CDC/internal/consumer"
 	"github.com/khangpt2k6/CDC/internal/debezium"
 	"github.com/khangpt2k6/CDC/internal/dlq"
+	"github.com/khangpt2k6/CDC/internal/lag"
 	"github.com/khangpt2k6/CDC/internal/metrics"
 	"github.com/khangpt2k6/CDC/internal/retry"
 	"github.com/khangpt2k6/CDC/internal/sink/clickhouse"
@@ -67,9 +68,14 @@ func main() {
 	}
 	defer deadletter.Close()
 
-	// Serve Prometheus metrics (currently just cdc_dlq_total) in the background.
-	// A bind failure is logged but non-fatal: it must not stop the data pipeline.
+	// Serve Prometheus metrics in the background. A bind failure is logged but
+	// non-fatal: it must not stop the data pipeline.
 	go serveMetrics(cfg.MetricsAddr)
+
+	// Sample consumer-group lag on a timer into the cdc_consumer_lag gauge, so
+	// /metrics shows how far behind the worker is and that it returns to zero
+	// once caught up. Stops with ctx on shutdown.
+	go lag.Run(ctx, cons, cfg.LagInterval)
 
 	slog.Info("cdc worker running",
 		"version", version,

@@ -22,6 +22,7 @@ type Config struct {
 	FlushInterval         time.Duration // CDC_FLUSH_INTERVAL (max time between flushes)
 	RetryBase             time.Duration // CDC_RETRY_BASE (first flush-retry backoff)
 	RetryMax              time.Duration // CDC_RETRY_MAX (flush-retry backoff cap)
+	LagInterval           time.Duration // CDC_LAG_INTERVAL (how often to sample consumer lag)
 	MetricsAddr           string        // CDC_METRICS_ADDR (host:port serving /metrics)
 	DLQTopicSuffix        string        // CDC_DLQ_TOPIC_SUFFIX (appended to a source topic to form its dead-letter topic)
 	LogLevel              string        // CDC_LOG_LEVEL (debug|info|warn|error)
@@ -59,6 +60,7 @@ func Load(getenv func(string) string) (Config, error) {
 		{"CDC_FLUSH_INTERVAL", "1s", &cfg.FlushInterval},
 		{"CDC_RETRY_BASE", "1s", &cfg.RetryBase},
 		{"CDC_RETRY_MAX", "30s", &cfg.RetryMax},
+		{"CDC_LAG_INTERVAL", "5s", &cfg.LagInterval},
 		{"CDC_CLICKHOUSE_DIAL_TIMEOUT", "5s", &cfg.ClickHouseDialTimeout},
 		{"CDC_CLICKHOUSE_READ_TIMEOUT", "30s", &cfg.ClickHouseReadTimeout},
 	} {

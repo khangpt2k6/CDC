@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -16,7 +17,8 @@ var ErrClosed = errors.New("consumer: client closed")
 
 // Consumer wraps a kgo.Client configured as a manual-commit consumer group.
 type Consumer struct {
-	cl *kgo.Client
+	cl    *kgo.Client
+	group string
 }
 
 // New dials brokers and joins group consuming topics, with auto-commit disabled.
@@ -30,7 +32,42 @@ func New(brokers []string, group string, topics []string) (*Consumer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("consumer: new client: %w", err)
 	}
-	return &Consumer{cl: cl}, nil
+	return &Consumer{cl: cl, group: group}, nil
+}
+
+// Lag reports the consumer group's uncommitted-record lag per topic and
+// partition (committed offset vs. the partition's end offset). It is computed
+// from broker metadata via the admin API, independent of the poll loop, so it
+// can be sampled on a timer for a gauge. A nil error with an empty map means the
+// group has no committed offsets yet (e.g. before the first commit).
+func (c *Consumer) Lag(ctx context.Context) (map[string]map[int32]int64, error) {
+	adm := kadm.NewClient(c.cl)
+	lags, err := adm.Lag(ctx, c.group)
+	if err != nil {
+		return nil, fmt.Errorf("consumer: describe lag: %w", err)
+	}
+	out := make(map[string]map[int32]int64)
+	described, ok := lags[c.group]
+	if !ok {
+		return out, nil
+	}
+	if described.DescribeErr != nil {
+		return nil, fmt.Errorf("consumer: describe group: %w", described.DescribeErr)
+	}
+	for topic, parts := range described.Lag {
+		for partition, ml := range parts {
+			// Skip partitions whose lag could not be computed (commit or
+			// list-offset error); Lag is -1 in that case.
+			if ml.Err != nil || ml.Lag < 0 {
+				continue
+			}
+			if out[topic] == nil {
+				out[topic] = make(map[int32]int64)
+			}
+			out[topic][partition] = ml.Lag
+		}
+	}
+	return out, nil
 }
 
 // Poll returns the next batch of records, blocking until some arrive or ctx is

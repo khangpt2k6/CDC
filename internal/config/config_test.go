@@ -28,6 +28,7 @@ func TestLoadDefaults(t *testing.T) {
 		FlushInterval:         time.Second,
 		RetryBase:             time.Second,
 		RetryMax:              30 * time.Second,
+		LagInterval:           5 * time.Second,
 		MetricsAddr:           ":9100",
 		DLQTopicSuffix:        ".dlq",
 		LogLevel:              "info",
@@ -47,6 +48,7 @@ func TestLoadOverrides(t *testing.T) {
 		"CDC_FLUSH_INTERVAL":          "250ms",
 		"CDC_RETRY_BASE":              "2s",
 		"CDC_RETRY_MAX":               "1m",
+		"CDC_LAG_INTERVAL":            "10s",
 		"CDC_CLICKHOUSE_DIAL_TIMEOUT": "3s",
 		"CDC_CLICKHOUSE_READ_TIMEOUT": "45s",
 		"CDC_METRICS_ADDR":            ":1234",
@@ -84,6 +86,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.RetryMax != time.Minute {
 		t.Errorf("RetryMax = %v, want 1m", cfg.RetryMax)
+	}
+	if cfg.LagInterval != 10*time.Second {
+		t.Errorf("LagInterval = %v, want 10s", cfg.LagInterval)
 	}
 	if cfg.ClickHouseDialTimeout != 3*time.Second {
 		t.Errorf("ClickHouseDialTimeout = %v, want 3s", cfg.ClickHouseDialTimeout)
