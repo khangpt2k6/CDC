@@ -7,11 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/khangpt2k6/CDC/internal/batch"
 	"github.com/khangpt2k6/CDC/internal/config"
 	"github.com/khangpt2k6/CDC/internal/consumer"
+	"github.com/khangpt2k6/CDC/internal/metrics"
 )
 
 // TestMapRecordClassification pins the parse/map → skip-vs-poison decision that
@@ -238,5 +240,47 @@ func TestRunDLQFailureBlocksOffset(t *testing.T) {
 	}
 	if len(fp.committed) != 0 {
 		t.Errorf("committed %d records despite DLQ failure, want 0 (offset must not advance)", len(fp.committed))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AC#2 (metrics only): "A dlq_total metric increments on each bad event." These
+// tests assert only the counter, reading it via a before/after delta so they do
+// not depend on other tests' contributions to the process-global counter.
+// ---------------------------------------------------------------------------
+
+// TestDLQTotalIncrementsPerBadEvent proves the metric moves by exactly one per
+// poison event: three malformed records yield a delta of three.
+func TestDLQTotalIncrementsPerBadEvent(t *testing.T) {
+	before := testutil.ToFloat64(metrics.DLQTotal)
+
+	recs := []*kgo.Record{record(malformed), record(malformed), record(malformed)}
+	if _, err := runLoop(t, recs, &fakeDLQ{}, &fakeBatcher{}); err != nil {
+		t.Fatalf("run returned %v, want nil", err)
+	}
+
+	if got := testutil.ToFloat64(metrics.DLQTotal) - before; got != 3 {
+		t.Errorf("dlq_total incremented by %v, want 3 (one per bad event)", got)
+	}
+}
+
+// TestDLQTotalUnchangedOnSkips proves intentional skips (tombstone / unsupported
+// op / untracked table) and valid records do not touch the counter -- only true
+// poison events do.
+func TestDLQTotalUnchangedOnSkips(t *testing.T) {
+	before := testutil.ToFloat64(metrics.DLQTotal)
+
+	recs := []*kgo.Record{
+		record("null"), // tombstone
+		record(`{"op":"t","source":{"schema":"public","table":"orders"}}`),               // unsupported op
+		record(`{"op":"c","after":{"x":1},"source":{"schema":"public","table":"nope"}}`), // untracked table
+		record(fmtRecord(goodCustomer, 1)),                                               // valid record
+	}
+	if _, err := runLoop(t, recs, &fakeDLQ{}, &fakeBatcher{}); err != nil {
+		t.Fatalf("run returned %v, want nil", err)
+	}
+
+	if got := testutil.ToFloat64(metrics.DLQTotal) - before; got != 0 {
+		t.Errorf("dlq_total moved by %v on non-poison events, want 0", got)
 	}
 }
