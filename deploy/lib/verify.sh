@@ -224,3 +224,41 @@ kafka_total_lag() {
 ch_optimize_final() {
   ch_query "OPTIMIZE TABLE cdc.$1 FINAL" >/dev/null 2>&1
 }
+
+# ------------------------------------------------------------------------------
+# Topic partitioning and consumer-group membership (ROADMAP Issue 5.1)
+# ------------------------------------------------------------------------------
+#
+# These back the rebalance test and the scale-out acceptance checks. Like
+# kafka_group_offsets above, each runs through `sh -c '...'` inside the broker
+# container so the absolute /opt/kafka/... path is NOT mangled by MSYS/Git-Bash
+# path conversion on Windows. Portable across Windows Git Bash, Linux, and macOS.
+
+# kafka_partition_count <topic> prints the topic's partition count by parsing the
+# PartitionCount field of kafka-topics.sh --describe.
+kafka_partition_count() {
+  $COMPOSE exec -T kafka sh -c \
+    "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --describe --topic '$1'" \
+    2>/dev/null \
+    | awk '{for (i = 1; i <= NF; i++) if ($i == "PartitionCount:") { print $(i + 1); exit }}'
+}
+
+# kafka_group_members <group> prints how many active members the consumer group
+# has, by counting the data rows of --describe --members (header skipped). One row
+# per member, so the row count is the member count.
+kafka_group_members() {
+  $COMPOSE exec -T kafka sh -c \
+    "/opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:9092 --describe --group '$1' --members" \
+    2>/dev/null \
+    | awk 'NR > 1 && $1 != "" && $1 != "GROUP" { c++ } END { print c + 0 }'
+}
+
+# kafka_assigned_partitions_total <group> sums the #PARTITIONS column (last field)
+# across all members. Equals 12 when all 6 x 2 tracked-topic partitions are
+# assigned with no gaps; a value below that means a partition is unassigned.
+kafka_assigned_partitions_total() {
+  $COMPOSE exec -T kafka sh -c \
+    "/opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:9092 --describe --group '$1' --members" \
+    2>/dev/null \
+    | awk 'NR > 1 && $NF ~ /^[0-9]+$/ { s += $NF } END { print s + 0 }'
+}
