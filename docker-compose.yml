@@ -14,6 +14,37 @@
 
 name: cdc-local
 
+# Shared config for the three worker instances. They form one consumer group
+# (cdc-clickhouse-sink) so Kafka spreads the 12 partitions (6 x 2 tracked topics)
+# across them and rebalances on a membership change (Issue 5.1 / Task 3). Only
+# container_name differs per instance; everything else merges from this anchor.
+x-cdc-worker: &cdc-worker
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: cdc-worker:local # shared image; build once, run 3x
+  restart: unless-stopped
+  depends_on:
+    kafka:
+      condition: service_healthy
+    clickhouse:
+      condition: service_healthy
+    connect:
+      condition: service_healthy
+  environment:
+    CDC_KAFKA_BROKERS: kafka:9092
+    CDC_KAFKA_GROUP: cdc-clickhouse-sink
+    CDC_CLICKHOUSE_DSN: "clickhouse://default:@clickhouse:9000/cdc"
+    CDC_METRICS_ADDR: ":9100"
+  # No host port for :9100 — Prometheus scrapes each worker over the compose
+  # network by service name (Task 4). Publishing all three to the host collides.
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- http://localhost:9100/metrics >/dev/null 2>&1 || exit 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 15
+    start_period: 15s
+
 services:
   kafka:
     image: apache/kafka:3.9.1
@@ -180,6 +211,22 @@ services:
       timeout: 5s
       retries: 15
       start_period: 30s # plugin install on first boot is slow
+
+  # Three worker instances in one consumer group (Issue 5.1 / Task 3). All share
+  # the cdc-worker:local image and the &cdc-worker config above; only the
+  # container name differs. Kafka assigns disjoint partition sets across them and
+  # rebalances when one joins or leaves.
+  worker1:
+    <<: *cdc-worker
+    container_name: cdc-worker1
+
+  worker2:
+    <<: *cdc-worker
+    container_name: cdc-worker2
+
+  worker3:
+    <<: *cdc-worker
+    container_name: cdc-worker3
 
 volumes:
   kafka-data:
