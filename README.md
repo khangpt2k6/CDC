@@ -113,6 +113,16 @@ load under the **CDC** folder:
 **Prerequisites:** Go 1.26+, Docker + Docker Compose,
 [golangci-lint](https://golangci-lint.run) v2.
 
+### Scale out (concurrent consumers)
+
+The worker is a stateless Kafka consumer-group member. `docker compose up -d`
+runs three instances (`worker1/2/3`) over 6-partition topics; Kafka spreads the
+partitions across them and rebalances on a membership change. Per-key ordering is
+preserved (each primary key hashes to one partition) and idempotent
+`ReplacingMergeTree(_version = LSN)` writes mean a rebalance never loses or
+duplicates a row. Prove it: `bash deploy/verify-rebalance.sh --fresh`. Measure
+aggregate throughput with `bash deploy/bench-scaled.sh`.
+
 ## 🛠️ Common tasks
 
 ```sh
