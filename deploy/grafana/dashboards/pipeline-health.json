@@ -21,7 +21,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "cdc-prometheus" },
-          "expr": "rate(cdc_events_consumed_total[1m])",
+          "expr": "sum(rate(cdc_events_consumed_total[1m]))",
           "legendFormat": "events/s"
         }
       ]
@@ -81,13 +81,13 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "cdc-prometheus" },
-          "expr": "rate(cdc_dlq_total[5m])",
+          "expr": "sum(rate(cdc_dlq_total[5m]))",
           "legendFormat": "dlq/s"
         },
         {
           "refId": "B",
           "datasource": { "type": "prometheus", "uid": "cdc-prometheus" },
-          "expr": "rate(cdc_sink_retries_total[5m])",
+          "expr": "sum(rate(cdc_sink_retries_total[5m]))",
           "legendFormat": "sink retries/s"
         }
       ]
@@ -103,7 +103,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "cdc-prometheus" },
-          "expr": "rate(cdc_rows_written_total[1m])",
+          "expr": "sum(rate(cdc_rows_written_total[1m]))",
           "legendFormat": "rows/s"
         }
       ]
@@ -119,8 +119,24 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "cdc-prometheus" },
-          "expr": "cdc_buffered_rows",
+          "expr": "sum(cdc_buffered_rows)",
           "legendFormat": "buffered rows"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Rows written /s by worker",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "cdc-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "rps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "cdc-prometheus" },
+          "expr": "rate(cdc_rows_written_total[1m])",
+          "legendFormat": "{{instance}}"
         }
       ]
     }
